@@ -1,0 +1,11 @@
+# compose.yml.example
+# TODO: Sprint 2 — lisatakse kui stack on valitud
+#
+# Planeeritud teenused:
+#   db        — pgduckdb/pgduckdb:18-v1.1.1
+#   pipeline  — Python DAGs (gps, fuel, gtfs) + dbt
+#   dashboard — (otsustatakse Sprint 2 alguses)
+#
+# Käivitamine (Sprint 2 järel):
+#   cp .env.example .env
+#   docker compose up -d --build
