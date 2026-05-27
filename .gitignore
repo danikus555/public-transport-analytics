@@ -5,4 +5,4 @@ __pycache__/
 *.pyc
 logs/**/*.log
 !logs/.geetkeep
-.DS_Store
+.DS_Store.DS_Store
