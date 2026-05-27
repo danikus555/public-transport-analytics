@@ -6,3 +6,5 @@ __pycache__/
 logs/**/*.log
 !logs/.geetkeep
 .DS_Store.DS_Store
+.DS_Store
+**/.DS_Store
