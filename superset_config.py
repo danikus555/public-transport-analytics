@@ -1,0 +1,23 @@
+import os
+
+SQLALCHEMY_DATABASE_URI = os.environ["SUPERSET_DATABASE_URI"]
+SECRET_KEY = os.environ["SUPERSET_SECRET_KEY"]
+
+CACHE_CONFIG = {"CACHE_TYPE": "SimpleCache"}
+FILTER_STATE_CACHE_CONFIG = {"CACHE_TYPE": "SimpleCache"}
+EXPLORE_FORM_DATA_CACHE_CONFIG = {"CACHE_TYPE": "SimpleCache"}
+
+FEATURE_FLAGS = {
+    "ENABLE_TEMPLATE_PROCESSING": True,
+    "DASHBOARD_NATIVE_FILTERS": True,
+    "DASHBOARD_CROSS_FILTERS": True,
+}
+
+WTF_CSRF_ENABLED = True
+
+MAPBOX_API_KEY = ""
+DECKGL_BASE_MAP = [
+    ["https://c.tile.openstreetmap.org/{z}/{x}/{y}.png", "OpenStreetMap"]
+]
+
+SUPERSET_WEBSERVER_TIMEOUT = 300

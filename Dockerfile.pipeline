@@ -1,0 +1,23 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.pipeline.txt .
+RUN pip install --no-cache-dir -r requirements.pipeline.txt
+
+COPY scripts/ ./scripts/
+
+RUN mkdir -p logs IN/gps IN/fuel IN/gtfs
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD python -c \
+    "import psycopg2,os; psycopg2.connect(host=os.getenv('DB_HOST'),dbname=os.getenv('DB_NAME'),user=os.getenv('DB_USER'),password=os.getenv('DB_PASSWORD'))" \
+    || exit 1
+
+CMD ["python", "scripts/scheduler.py"]

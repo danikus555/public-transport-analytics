@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install psycopg2-binary FIRST before dbt
+RUN pip install --no-cache-dir psycopg2-binary==2.9.9
+
+# Now install dbt — it will use already installed psycopg2-binary
+RUN pip install --no-cache-dir dbt-postgres==1.8.0 --no-deps
+RUN pip install --no-cache-dir dbt-core==1.8.0
+
+COPY dbt/ ./dbt/
+
+RUN mkdir -p logs
+
+CMD ["dbt", "run", "--project-dir", "/app/dbt", "--profiles-dir", "/app/dbt"]
