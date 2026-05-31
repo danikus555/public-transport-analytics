@@ -5,8 +5,47 @@ sources:
     schema: bronze
     tables:
       - name: vehicle_positions
-      - name: elron_positions
+        columns:
+          - name: vehicle_id
+            tests:
+              - not_null
+          - name: lat
+            tests:
+              - not_null
+          - name: lon
+            tests:
+              - not_null
+          - name: ingested_at
+            tests:
+              - not_null
+          - name: operator
+            tests:
+              - not_null
+              - accepted_values:
+                  values: ['TLT', 'Elron']
+
       - name: fuel_prices
+        columns:
+          - name: fuel_type
+            tests:
+              - not_null
+              - accepted_values:
+                  values: ['95', '98', 'Diesel', 'electric', 'CNG']
+          - name: price_eur
+            tests:
+              - not_null
+
+      - name: elron_positions
+        columns:
+          - name: liin
+            tests:
+              - not_null
+          - name: lat
+            tests:
+              - not_null
+          - name: lon
+            tests:
+              - not_null
 
   - name: reference
     schema: reference
@@ -16,6 +55,17 @@ sources:
       - name: gtfs_trips
       - name: gtfs_stop_times
       - name: vehicle_models
+        columns:
+          - name: id
+            tests:
+              - not_null
+              - unique
+          - name: model
+            tests:
+              - not_null
+          - name: consumption
+            tests:
+              - not_null
       - name: operators
       - name: line_types
       - name: fuel_types
