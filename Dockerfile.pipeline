@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -r requirements.pipeline.txt
 
 COPY scripts/ ./scripts/
 
-RUN mkdir -p logs IN/gps IN/fuel IN/gtfs
+RUN mkdir -p logs IN/gps IN/fuel IN/gtfs IN/elron
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD python -c \

@@ -1,0 +1,23 @@
+version: 2
+
+sources:
+  - name: bronze
+    schema: bronze
+    tables:
+      - name: vehicle_positions
+      - name: elron_positions
+      - name: fuel_prices
+
+  - name: reference
+    schema: reference
+    tables:
+      - name: gtfs_routes
+      - name: gtfs_stops
+      - name: gtfs_trips
+      - name: gtfs_stop_times
+      - name: vehicle_models
+      - name: operators
+      - name: line_types
+      - name: fuel_types
+      - name: elron_line_types
+      - name: client_discounts

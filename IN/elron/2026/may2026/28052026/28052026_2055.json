@@ -1,0 +1,58 @@
+{
+  "fetched_at": "2026-05-28T20:55:51.528709",
+  "source": "https://elron.ee/map_data.json",
+  "count": 3,
+  "trains": [
+    {
+      "reis": "107",
+      "liin": "Tartu-Tallinn",
+      "reisi_algus_aeg": "21:21",
+      "reisi_lopp_aeg": "23:56",
+      "kiirus": "26",
+      "latitude": "59.438527",
+      "longitude": "24.731729",
+      "rongi_suund": "57",
+      "erinevus_plaanist": "",
+      "lisateade": "",
+      "pohjus_teade": "",
+      "avalda_kodulehel": "",
+      "asukoha_uuendus": "2026-05-28 23:55:50",
+      "reisi_staatus": "plaaniline",
+      "viimane_peatus": "Kitseküla"
+    },
+    {
+      "reis": "230",
+      "liin": "Tallinn - Rakvere",
+      "reisi_algus_aeg": "22:26",
+      "reisi_lopp_aeg": "00:01",
+      "kiirus": "132",
+      "latitude": "59.341239",
+      "longitude": "26.205140",
+      "rongi_suund": "84",
+      "erinevus_plaanist": "",
+      "lisateade": "",
+      "pohjus_teade": "",
+      "avalda_kodulehel": "",
+      "asukoha_uuendus": "2026-05-28 23:55:49",
+      "reisi_staatus": "plaaniline",
+      "viimane_peatus": "Kadrina"
+    },
+    {
+      "reis": "765",
+      "liin": "Tallinn - Keila",
+      "reisi_algus_aeg": "23:45",
+      "reisi_lopp_aeg": "00:20",
+      "kiirus": "69",
+      "latitude": "59.387933",
+      "longitude": "24.698088",
+      "rongi_suund": "253",
+      "erinevus_plaanist": "",
+      "lisateade": "",
+      "pohjus_teade": "",
+      "avalda_kodulehel": "",
+      "asukoha_uuendus": "2026-05-28 23:55:49",
+      "reisi_staatus": "plaaniline",
+      "viimane_peatus": "Rahumäe"
+    }
+  ]
+}

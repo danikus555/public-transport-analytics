@@ -1,18 +1,21 @@
+# =============================================================
+# public-transport-analytics — pipeline requirements
+# =============================================================
 
 # HTTP requests and scraping
 requests==2.31.0
 beautifulsoup4==4.12.2
- 
+lxml==5.1.0
+
 # Database
 psycopg2-binary==2.9.9
- 
+
 # Scheduling
 apscheduler==3.10.4
- 
+
 # Logging
 loguru==0.7.2
- 
+
 # Testing
 pytest==7.4.0
 pytest-mock==3.11.1
- 

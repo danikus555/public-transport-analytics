@@ -1,0 +1,41 @@
+{
+  "fetched_at": "2026-05-28T20:56:51.528003",
+  "source": "https://elron.ee/map_data.json",
+  "count": 2,
+  "trains": [
+    {
+      "reis": "230",
+      "liin": "Tallinn - Rakvere",
+      "reisi_algus_aeg": "22:26",
+      "reisi_lopp_aeg": "00:01",
+      "kiirus": "136",
+      "latitude": "59.343940",
+      "longitude": "26.244126",
+      "rongi_suund": "77",
+      "erinevus_plaanist": "",
+      "lisateade": "",
+      "pohjus_teade": "",
+      "avalda_kodulehel": "",
+      "asukoha_uuendus": "2026-05-28 23:56:49",
+      "reisi_staatus": "plaaniline",
+      "viimane_peatus": "Kadrina"
+    },
+    {
+      "reis": "765",
+      "liin": "Tallinn - Keila",
+      "reisi_algus_aeg": "23:45",
+      "reisi_lopp_aeg": "00:20",
+      "kiirus": "0",
+      "latitude": "59.386224",
+      "longitude": "24.687012",
+      "rongi_suund": "252",
+      "erinevus_plaanist": "",
+      "lisateade": "",
+      "pohjus_teade": "",
+      "avalda_kodulehel": "",
+      "asukoha_uuendus": "2026-05-28 23:56:49",
+      "reisi_staatus": "plaaniline",
+      "viimane_peatus": "Nõmme"
+    }
+  ]
+}

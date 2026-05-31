@@ -7,10 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install psycopg2-binary FIRST before dbt
 RUN pip install --no-cache-dir psycopg2-binary==2.9.9
-
-# Now install dbt — it will use already installed psycopg2-binary
 RUN pip install --no-cache-dir dbt-postgres==1.8.0 --no-deps
 RUN pip install --no-cache-dir dbt-core==1.8.0
 
@@ -18,4 +15,12 @@ COPY dbt/ ./dbt/
 
 RUN mkdir -p logs
 
-CMD ["dbt", "run", "--project-dir", "/app/dbt", "--profiles-dir", "/app/dbt"]
+# Run dbt every DBT_INTERVAL_MIN minutes in a loop
+# Logs saved to logs/YYYY/mmmYYYY/DDMMYYYY/
+CMD ["sh", "-c", "\
+  while true; do \
+    LOG_DIR=/app/logs/$(date +%Y)/$(date +%b%Y | tr '[:upper:]' '[:lower:]')/$(date +%d%m%Y); \
+    mkdir -p $LOG_DIR; \
+    dbt run --project-dir /app/dbt --profiles-dir /app/dbt --log-path $LOG_DIR; \
+    sleep ${DBT_INTERVAL_MIN:-5}m; \
+  done"]

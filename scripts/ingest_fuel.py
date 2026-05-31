@@ -1,17 +1,22 @@
 """
 scripts/ingest_fuel.py
 
-Scrapes fuel prices from teadmiseks.ee.
+Scrapes and fetches fuel prices from multiple sources.
 Saves to:
   - bronze.fuel_prices (PostgreSQL)
   - IN/fuel/YYYY/mmmYYYY/DDMMYYYY.json
+
+Sources:
+  teadmiseks.ee  → 95, 98, Diesel  (daily)
+  elering.ee     → electric kWh     (every 15 min, Nord Pool)
+  alexela.ee     → CNG kg           (weekly, changes rarely)
 """
 
 import os
 import json
 import time
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 from pathlib import Path
 
 import requests
@@ -22,9 +27,11 @@ from logger import log, get_tech_log, log_http, log_db_connected
 
 tech = get_tech_log("FUEL")
 
-# ── Config ───────────────────────────────────────────────────
-FUEL_URL = os.getenv("FUEL_URL", "https://www.teadmiseks.ee/kasulikku/kutusehinnad/")
-IN_BASE  = os.getenv("IN_BASE", "IN")
+# ── Config — all from env ─────────────────────────────────────
+FUEL_URL     = os.environ["FUEL_URL"]
+ELECTRIC_URL = os.environ.get("ELECTRIC_URL", "https://dashboard.elering.ee/api/nps/price")
+ALEXELA_URL  = os.environ.get("ALEXELA_URL",  "https://www.alexela.ee/et/uudised-vana?year=2026&category=78")
+IN_BASE      = os.environ["IN_BASE"]
 
 FUEL_TYPE_MAP = {
     "bensiin 95":  "95",
@@ -35,13 +42,20 @@ FUEL_TYPE_MAP = {
 
 # ── DB connection ─────────────────────────────────────────────
 def get_conn():
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST",         "localhost"),
-        port=int(os.getenv("DB_PORT",     5432)),
-        dbname=os.getenv("DB_NAME",       "transport_db"),
-        user=os.getenv("DB_USER",         "transport_user"),
-        password=os.getenv("DB_PASSWORD", "changeme")
-    )
+    try:
+        return psycopg2.connect(
+            host=os.environ["DB_HOST"],
+            port=int(os.environ["DB_PORT"]),
+            dbname=os.environ["DB_NAME"],
+            user=os.environ["DB_USER"],
+            password=os.environ["DB_PASSWORD"]
+        )
+    except KeyError as e:
+        tech.error(f"Missing env variable: {e}")
+        raise
+    except psycopg2.OperationalError as e:
+        tech.error(f"DB connection failed: {e}")
+        raise
 
 # ── Archive path ──────────────────────────────────────────────
 def build_archive_path(now: datetime) -> Path:
@@ -54,8 +68,9 @@ def build_archive_path(now: datetime) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     return folder / (now.strftime("%d%m%Y") + ".json")
 
-# ── Scrape fuel prices ────────────────────────────────────────
-def scrape_fuel() -> list[dict]:
+# ── Scrape 95/98/Diesel from teadmiseks.ee ───────────────────
+def scrape_fuel_prices() -> list[dict]:
+    """Scrape 95, 98, Diesel from teadmiseks.ee."""
     t_start = time.time()
     headers = {"User-Agent": "Mozilla/5.0 (transport-analytics-bot/1.0)"}
 
@@ -106,13 +121,85 @@ def scrape_fuel() -> list[dict]:
             "fuel_type":   fuel_type,
             "price_eur":   price,
             "source_date": today,
+            "source":      "teadmiseks.ee",
         })
-        log.debug(f"Scraped: {fuel_type} = {price} EUR")
-
-    if not prices:
-        tech.warning("No prices found — page structure may have changed")
 
     return prices
+
+# ── Fetch electric price from Elering ────────────────────────
+def fetch_electric_price() -> dict | None:
+    """
+    Fetch current Nord Pool electricity price from Elering API.
+    Returns price in €/kWh (converted from €/MWh).
+    Updates every 15 minutes.
+    """
+    try:
+        now_utc   = datetime.now(timezone.utc)
+        start_utc = now_utc.strftime("%Y-%m-%dT%H:00:00Z")
+        end_utc   = (now_utc + timedelta(hours=1)).strftime("%Y-%m-%dT%H:00:00Z")
+
+        url = f"{ELECTRIC_URL}?start={start_utc}&end={end_utc}"
+        t_start = time.time()
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        ms = (time.time() - t_start) * 1000
+        log_http("FUEL", url, r.status_code, ms)
+
+        data = r.json()
+        ee_prices = data.get("data", {}).get("ee", [])
+        if not ee_prices:
+            log.warning("Elering returned no EE prices")
+            return None
+
+        # get latest price, convert €/MWh → €/kWh
+        latest    = ee_prices[-1]
+        price_kwh = round(latest["price"] / 1000, 6)
+
+        return {
+            "fuel_type":   "electric",
+            "price_eur":   price_kwh,
+            "source_date": date.today().isoformat(),
+            "source":      "elering.ee",
+        }
+    except Exception as e:
+        tech.error(f"Elering fetch failed: {e}")
+        return None
+
+# ── Fetch CNG price from Alexela ─────────────────────────────
+def fetch_cng_price() -> dict | None:
+    """
+    Fetch CNG price from Alexela.
+    Changes rarely — checked weekly.
+    Falls back to last known price if scraping fails.
+    """
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (transport-analytics-bot/1.0)"}
+        t_start = time.time()
+        r = requests.get(ALEXELA_URL, headers=headers, timeout=15)
+        r.raise_for_status()
+        ms = (time.time() - t_start) * 1000
+        log_http("FUEL", ALEXELA_URL, r.status_code, ms)
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        text = soup.get_text()
+
+        # look for price pattern like "2,299 euroni kilogrammist" or "2.299 €/kg"
+        match = re.search(r'(\d+[.,]\d+)\s*(?:euroni|€)\s*(?:kilogrammist|/\s*kg)', text)
+        if match:
+            price = float(match.group(1).replace(",", "."))
+            if 1.0 <= price <= 5.0:
+                log.debug(f"Scraped CNG price: {price} €/kg")
+                return {
+                    "fuel_type":   "CNG",
+                    "price_eur":   price,
+                    "source_date": date.today().isoformat(),
+                    "source":      "alexela.ee",
+                }
+    except Exception as e:
+        tech.warning(f"Alexela CNG scrape failed: {e} — using last known price")
+
+    # fallback — return None, save_to_db will keep last known price
+    return None
 
 # ── Save to file ──────────────────────────────────────────────
 def save_to_file(prices: list[dict], now: datetime) -> Path:
@@ -120,7 +207,6 @@ def save_to_file(prices: list[dict], now: datetime) -> Path:
     data = {
         "date":       now.date().isoformat(),
         "scraped_at": now.isoformat(),
-        "source":     FUEL_URL,
         "prices":     {p["fuel_type"]: p["price_eur"] for p in prices}
     }
     with open(filepath, "w", encoding="utf-8") as f:
@@ -147,9 +233,9 @@ def save_to_db(prices: list[dict], conn) -> int:
             continue
 
         cur.execute("""
-            INSERT INTO bronze.fuel_prices (fuel_type, price_eur, source_date)
-            VALUES (%s, %s, %s)
-        """, (p["fuel_type"], p["price_eur"], p["source_date"]))
+            INSERT INTO bronze.fuel_prices (fuel_type, price_eur, source_date, source)
+            VALUES (%s, %s, %s, %s)
+        """, (p["fuel_type"], p["price_eur"], p["source_date"], p.get("source", "")))
         inserted += 1
 
     conn.commit()
@@ -160,34 +246,56 @@ def ingest_fuel():
     now   = datetime.now()
     start = time.time()
 
-    prices = scrape_fuel()
+    # 1. Scrape 95/98/Diesel
+    prices = scrape_fuel_prices()
+
+    # 2. Fetch electric price from Elering
+    electric = fetch_electric_price()
+    if electric:
+        prices.append(electric)
+
+    # 3. Fetch CNG price from Alexela (weekly — only add if scraped)
+    cng = fetch_cng_price()
+    if cng:
+        prices.append(cng)
+
     if not prices:
-        log.warning("Fuel scrape returned 0 prices — skipping")
+        log.warning("Fuel ingest returned 0 prices — skipping")
         return
 
+    # save to file
     try:
         filepath = save_to_file(prices, now)
     except Exception as e:
         log.error(f"File save failed: {e}")
         filepath = None
 
+    # save to DB
+    conn = None
     try:
-        conn    = get_conn()
+        conn = get_conn()
         log_db_connected(
-            os.getenv("DB_HOST", "localhost"),
-            os.getenv("DB_NAME", "transport_db"),
-            os.getenv("DB_USER", "transport_user")
+            os.environ["DB_HOST"],
+            os.environ["DB_NAME"],
+            os.environ["DB_USER"]
         )
         count   = save_to_db(prices, conn)
-        conn.close()
         elapsed = (time.time() - start) * 1000
-
-        # build summary without backslash in f-string
-        summary = ", ".join(p["fuel_type"] + "=" + str(p["price_eur"]) + "EUR" for p in prices)
-        log.info(f"Fuel ingest OK — {count} prices → bronze.fuel_prices | {summary} | {elapsed:.0f}ms")
-
+        summary = ", ".join(
+            f"{p['fuel_type']}={p['price_eur']}EUR" for p in prices
+        )
+        log.info(
+            f"Fuel ingest OK — {count} prices → bronze.fuel_prices"
+            f" | {summary}"
+            f" | {elapsed:.0f}ms"
+        )
     except Exception as e:
         log.error(f"DB save failed: {e}")
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            conn.close()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,24 @@
+{
+  "fetched_at": "2026-05-27T21:09:58.154304",
+  "source": "https://elron.ee/map_data.json",
+  "count": 1,
+  "trains": [
+    {
+      "reis": "765",
+      "liin": "Tallinn - Keila",
+      "reisi_algus_aeg": "23:45",
+      "reisi_lopp_aeg": "00:20",
+      "kiirus": "5",
+      "latitude": "59.337531",
+      "longitude": "24.591505",
+      "rongi_suund": "240",
+      "erinevus_plaanist": "",
+      "lisateade": "",
+      "pohjus_teade": "",
+      "avalda_kodulehel": "",
+      "asukoha_uuendus": "2026-05-28 00:09:55",
+      "reisi_staatus": "plaaniline",
+      "viimane_peatus": "Urda"
+    }
+  ]
+}

@@ -7,7 +7,7 @@ Saves to:
   - IN/gps/YYYY/mmmYYYY/DDMMYYYY/DDMMYYYY_HHMM.txt
 
 GPS feed format (comma-separated, no header):
-  cols[0] = operator_type  (2=regional/other, 3=TLT)
+  cols[0] = line_type      (2=bus, 3=tram)
   cols[1] = line_number    (36, 12, 5, 42 etc)
   cols[2] = lon * 1000000
   cols[3] = lat * 1000000
@@ -17,10 +17,6 @@ GPS feed format (comma-separated, no header):
   cols[7] = low_floor      (Z=yes, false=no)
   cols[8] = ??? (seems unused)
   cols[9] = destination
-
-Operator types:
-  2 = regional/suburban buses
-  3 = TLT city transport (tram, bus, trolleybus)
 """
 
 import os
@@ -37,9 +33,9 @@ from logger import log, get_tech_log, log_http, log_db_connected
 tech = get_tech_log("GPS")
 
 # ── Config ───────────────────────────────────────────────────
-GPS_URL  = os.getenv("GPS_URL", "https://transport.tallinn.ee/gps.txt")
-OPERATOR = os.getenv("GPS_OPERATOR", "TLT")
-IN_BASE  = os.getenv("IN_BASE", "IN")
+GPS_URL  = os.environ["GPS_URL"]
+OPERATOR = os.environ.get("GPS_OPERATOR", "TLT")
+IN_BASE  = os.environ["IN_BASE"]
 
 ESTONIA_BOUNDS = {
     "lat_min": 57.50, "lat_max": 60.00,
@@ -48,13 +44,20 @@ ESTONIA_BOUNDS = {
 
 # ── DB connection ─────────────────────────────────────────────
 def get_conn():
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST",         "localhost"),
-        port=int(os.getenv("DB_PORT",     5432)),
-        dbname=os.getenv("DB_NAME",       "transport_db"),
-        user=os.getenv("DB_USER",         "transport_user"),
-        password=os.getenv("DB_PASSWORD", "changeme")
-    )
+    try:
+        return psycopg2.connect(
+            host=os.environ["DB_HOST"],
+            port=int(os.environ["DB_PORT"]),
+            dbname=os.environ["DB_NAME"],
+            user=os.environ["DB_USER"],
+            password=os.environ["DB_PASSWORD"]
+        )
+    except KeyError as e:
+        tech.error(f"Missing env variable: {e}")
+        raise
+    except psycopg2.OperationalError as e:
+        tech.error(f"DB connection failed: {e}")
+        raise
 
 # ── Archive path ──────────────────────────────────────────────
 def build_archive_path(now: datetime) -> Path:
@@ -70,10 +73,7 @@ def build_archive_path(now: datetime) -> Path:
 
 # ── Parse one GPS line ────────────────────────────────────────
 def parse_line(line: str) -> dict | None:
-    """
-    Parse one CSV line from GPS feed.
-    Returns dict or None if invalid.
-    """
+    """Parse one CSV line from GPS feed. Returns dict or None if invalid."""
     try:
         cols = line.strip().split(",")
         if len(cols) < 10:
@@ -91,8 +91,8 @@ def parse_line(line: str) -> dict | None:
 
         return {
             "vehicle_id":  int(cols[6]) if cols[6].strip() else None,
-            "line_type":   int(cols[0]),    # operator type: 2=regional, 3=TLT
-            "line_number": cols[1].strip(), # line number: 36, 12, 5 etc
+            "line_type":   int(cols[0]),
+            "line_number": cols[1].strip(),
             "destination": cols[9].strip(),
             "lat":         lat,
             "lon":         lon,
@@ -173,58 +173,6 @@ def save_to_db(rows: list[dict], conn) -> int:
     conn.commit()
     return len(rows)
 
-# ── Replay from files ─────────────────────────────────────────
-def replay_from_files(folder: str = None) -> int:
-    """
-    Read all saved GPS files from IN/gps/ and insert to DB.
-    Use this to rebuild DB from file archive after truncate.
-
-    Usage:
-        docker exec transport-pipeline python scripts/ingest_gps.py --replay
-    """
-    if folder is None:
-        folder = os.path.join(os.getenv("IN_BASE", "IN"), "gps")
-
-    log.info(f"Replaying GPS data from {folder}...")
-    conn  = get_conn()
-    total = 0
-
-    for root, dirs, files in os.walk(folder):
-        for fname in sorted(files):
-            if not fname.endswith(".txt"):
-                continue
-            filepath = os.path.join(root, fname)
-            rows = []
-
-            with open(filepath, "r", encoding="utf-8") as f:
-                for line in f:
-                    cols = line.strip().split(",")
-                    if len(cols) < 10:
-                        continue
-                    try:
-                        rows.append({
-                            "vehicle_id":  int(cols[1]) if cols[1].strip() not in ("None", "") else None,
-                            "line_type":   int(cols[2]),
-                            "line_number": cols[3].strip(),
-                            "destination": cols[4].strip(),
-                            "lat":         float(cols[5]),
-                            "lon":         float(cols[6]),
-                            "bearing":     int(cols[7]) if cols[7].strip() not in ("None", "") else None,
-                            "low_floor":   cols[8].strip() == "True",
-                            "operator":    cols[9].strip(),
-                        })
-                    except (ValueError, IndexError):
-                        continue
-
-            if rows:
-                count = save_to_db(rows, conn)
-                total += count
-                log.info(f"Replayed {count} rows from {fname}")
-
-    conn.close()
-    log.info(f"Replay complete — {total} total rows inserted")
-    return total
-
 # ── Main entry point ──────────────────────────────────────────
 def ingest_gps():
     """Fetch GPS feed → save to file archive + DB."""
@@ -242,15 +190,15 @@ def ingest_gps():
         log.error(f"File save failed: {e}")
         filepath = None
 
+    conn = None
     try:
         conn    = get_conn()
         log_db_connected(
-            os.getenv("DB_HOST", "localhost"),
-            os.getenv("DB_NAME", "transport_db"),
-            os.getenv("DB_USER", "transport_user")
+            os.environ["DB_HOST"],
+            os.environ["DB_NAME"],
+            os.environ["DB_USER"]
         )
         count   = save_to_db(rows, conn)
-        conn.close()
         elapsed = (time.time() - start) * 1000
         log.info(
             f"GPS ingest OK — {count} vehicles → bronze.vehicle_positions"
@@ -259,10 +207,12 @@ def ingest_gps():
         )
     except Exception as e:
         log.error(f"DB save failed: {e}")
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            conn.close()
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--replay":
-        replay_from_files()
-    else:
-        ingest_gps()
+    ingest_gps()

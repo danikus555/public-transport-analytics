@@ -1,0 +1,16 @@
+# =============================================================
+# public-transport-analytics — dbt connection profile
+# Schema is intentionally empty — controlled by generate_schema_name macro
+# =============================================================
+transport:
+  target: dev
+  outputs:
+    dev:
+      type:     postgres
+      host:     "{{ env_var('DB_HOST') }}"
+      port:     "{{ env_var('DB_PORT') | int }}"
+      dbname:   "{{ env_var('DB_NAME') }}"
+      user:     "{{ env_var('DB_USER') }}"
+      password: "{{ env_var('DB_PASSWORD') }}"
+      schema:   public
+      threads:  4

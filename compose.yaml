@@ -15,7 +15,7 @@ services:
     ports:
       - "${DB_PORT_HOST:-55432}:5432"
     volumes:
-      - ./init:/docker-entrypoint-initdb.d   # runs 01_schemas.sql on first start
+      - ./init:/docker-entrypoint-initdb.d
       - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-transport_user}"]
@@ -50,16 +50,30 @@ services:
     container_name: transport-pipeline
     env_file: .env
     environment:
-      DB_HOST:     db
-      DB_PORT:     5432
-      DB_USER:     ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_NAME:     ${POSTGRES_DB}
-      GPS_URL:     ${GPS_URL}
-      FUEL_URL:    ${FUEL_URL}
-      GTFS_URL:    ${GTFS_URL}
-      LOG_DIR:     /app/logs
-      IN_BASE:     /app/IN
+      DB_HOST:              db
+      DB_PORT:              5432
+      DB_USER:              ${POSTGRES_USER}
+      DB_PASSWORD:          ${POSTGRES_PASSWORD}
+      DB_NAME:              ${POSTGRES_DB}
+      GPS_URL:              ${GPS_URL}
+      GPS_INTERVAL_SEC:     ${GPS_INTERVAL_SEC}
+      FUEL_URL:             ${FUEL_URL}
+      FUEL_CRON_HOUR:       ${FUEL_CRON_HOUR}
+      ELECTRIC_URL:         ${ELECTRIC_URL}
+      ALEXELA_URL:          ${ALEXELA_URL}
+      GTFS_TLT_URL:         ${GTFS_TLT_URL}
+      GTFS_TLT_CRON_DAY:    ${GTFS_TLT_CRON_DAY}
+      GTFS_TLT_CRON_HOUR:   ${GTFS_TLT_CRON_HOUR}
+      GTFS_ELRON_URL:       ${GTFS_ELRON_URL}
+      GTFS_ELRON_CRON_DAY:  ${GTFS_ELRON_CRON_DAY}
+      GTFS_ELRON_CRON_HOUR: ${GTFS_ELRON_CRON_HOUR}
+      ELRON_RT_URL:         ${ELRON_RT_URL}
+      ELRON_INTERVAL_SEC:   ${ELRON_INTERVAL_SEC}
+      NIGHT_START_HOUR:     ${NIGHT_START_HOUR}
+      NIGHT_END_HOUR:       ${NIGHT_END_HOUR}
+      SUPERSET_URL:         http://superset:8088
+      LOG_DIR:              /app/logs
+      IN_BASE:              /app/IN
     depends_on:
       db:
         condition: service_healthy
@@ -71,18 +85,18 @@ services:
 
   # ── dbt transformations ─────────────────────────────────────
   dbt:
-    profiles: ["donotstart"]
     build:
       context: .
       dockerfile: Dockerfile.dbt
     container_name: transport-dbt
     env_file: .env
     environment:
-      DB_HOST:     db
-      DB_PORT:     5432
-      DB_USER:     ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_NAME:     ${POSTGRES_DB}
+      DB_HOST:           db
+      DB_PORT:           5432
+      DB_USER:           ${POSTGRES_USER}
+      DB_PASSWORD:       ${POSTGRES_PASSWORD}
+      DB_NAME:           ${POSTGRES_DB}
+      DBT_INTERVAL_MIN:  ${DBT_INTERVAL_MIN}
     depends_on:
       db:
         condition: service_healthy
@@ -99,14 +113,15 @@ services:
     container_name: transport-superset
     env_file: .env
     environment:
-      SUPERSET_SECRET_KEY:   ${SUPERSET_SECRET_KEY}
-      SUPERSET_DB_USER:      ${SUPERSET_DB_USER}
-      SUPERSET_DB_PASSWORD:  ${SUPERSET_DB_PASSWORD}
-      SUPERSET_DB_NAME:      ${SUPERSET_DB_NAME}
-      SUPERSET_ADMIN_USER:   ${SUPERSET_ADMIN_USER}
+      SUPERSET_SECRET_KEY:     ${SUPERSET_SECRET_KEY}
+      SUPERSET_DB_USER:        ${SUPERSET_DB_USER}
+      SUPERSET_DB_PASSWORD:    ${SUPERSET_DB_PASSWORD}
+      SUPERSET_DB_NAME:        ${SUPERSET_DB_NAME}
+      SUPERSET_ADMIN_USER:     ${SUPERSET_ADMIN_USER}
       SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
-      SUPERSET_ADMIN_EMAIL:  ${SUPERSET_ADMIN_EMAIL}
-      SUPERSET_DATABASE_URI: "postgresql+psycopg2://${SUPERSET_DB_USER}:${SUPERSET_DB_PASSWORD}@superset-db:5432/${SUPERSET_DB_NAME}"
+      SUPERSET_ADMIN_EMAIL:    ${SUPERSET_ADMIN_EMAIL}
+      SUPERSET_DATABASE_URI:   "postgresql+psycopg2://${SUPERSET_DB_USER}:${SUPERSET_DB_PASSWORD}@superset-db:5432/${SUPERSET_DB_NAME}"
+      SUPERSET_URL:            http://superset:8088
     ports:
       - "${DASHBOARD_PORT_HOST:-8088}:8088"
     depends_on:

@@ -1,0 +1,58 @@
+{
+  "fetched_at": "2026-05-28T20:50:51.530098",
+  "source": "https://elron.ee/map_data.json",
+  "count": 3,
+  "trains": [
+    {
+      "reis": "107",
+      "liin": "Tartu-Tallinn",
+      "reisi_algus_aeg": "21:21",
+      "reisi_lopp_aeg": "23:56",
+      "kiirus": "80",
+      "latitude": "59.417048",
+      "longitude": "24.755308",
+      "rongi_suund": "256",
+      "erinevus_plaanist": "",
+      "lisateade": "",
+      "pohjus_teade": "",
+      "avalda_kodulehel": "",
+      "asukoha_uuendus": "2026-05-28 23:50:48",
+      "reisi_staatus": "plaaniline",
+      "viimane_peatus": "Ülemiste"
+    },
+    {
+      "reis": "230",
+      "liin": "Tallinn - Rakvere",
+      "reisi_algus_aeg": "22:26",
+      "reisi_lopp_aeg": "00:01",
+      "kiirus": "95",
+      "latitude": "59.335911",
+      "longitude": "26.114992",
+      "rongi_suund": "65",
+      "erinevus_plaanist": "",
+      "lisateade": "",
+      "pohjus_teade": "",
+      "avalda_kodulehel": "",
+      "asukoha_uuendus": "2026-05-28 23:50:49",
+      "reisi_staatus": "plaaniline",
+      "viimane_peatus": "Tapa"
+    },
+    {
+      "reis": "765",
+      "liin": "Tallinn - Keila",
+      "reisi_algus_aeg": "23:45",
+      "reisi_lopp_aeg": "00:20",
+      "kiirus": "0",
+      "latitude": "59.410471",
+      "longitude": "24.733203",
+      "rongi_suund": "199",
+      "erinevus_plaanist": "",
+      "lisateade": "",
+      "pohjus_teade": "",
+      "avalda_kodulehel": "",
+      "asukoha_uuendus": "2026-05-28 23:50:49",
+      "reisi_staatus": "plaaniline",
+      "viimane_peatus": "Tondi"
+    }
+  ]
+}

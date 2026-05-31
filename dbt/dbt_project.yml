@@ -1,0 +1,31 @@
+# =============================================================
+# public-transport-analytics
+# dbt_project.yml
+# =============================================================
+
+name:           transport_analytics
+version:        '1.0.0'
+config-version: 2
+
+profile: transport
+
+model-paths:    ["models"]
+macro-paths:    ["macros"]
+test-paths:     ["tests"]
+seed-paths:     ["seeds"]
+analysis-paths: ["analyses"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  transport_analytics:
+    silver:
+      +materialized: table
+      +schema: silver
+    gold:
+      +materialized: table
+      +schema: gold
