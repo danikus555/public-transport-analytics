@@ -3,14 +3,20 @@ scripts/setup_superset.py
 
 Automatically configures Superset after fresh install:
   1. Creates database connection (transport_db)
-  2. Creates datasets from gold + bronze tables
-  3. Creates charts
-  4. Creates dashboard
+  2. Creates datasets from gold + bronze + silver tables
+  3. Creates charts — each dashboard has its own chart instances
+     (prefixed with dashboard name) so editing one does not affect others
+  4. Creates 4 dashboards with charts assigned
+
+Dashboards:
+  1. Public - Public Transport Estonia  (public view)
+  2. TLT - Operatiivanalüüs             (TLT analyst)
+  3. Elron - Analüüs                    (Elron analyst)
+  4. Admin - Pipeline Monitooring       (data engineer)
 
 Usage:
   python scripts/setup_superset.py
-
-Run after: docker compose up -d
+  Run after: docker compose up -d
 """
 
 import os
@@ -18,21 +24,28 @@ import time
 import json
 import requests
 
-# ── Config — all from env ─────────────────────────────────────
 SUPERSET_URL      = os.environ["SUPERSET_URL"]
 SUPERSET_USER     = os.environ["SUPERSET_ADMIN_USER"]
 SUPERSET_PASSWORD = os.environ["SUPERSET_ADMIN_PASSWORD"]
+DB_HOST           = os.environ["DB_HOST"]
+DB_PORT           = os.environ["DB_PORT"]
+DB_NAME           = os.environ["DB_NAME"]
+DB_USER           = os.environ["DB_USER"]
+DB_PASSWORD       = os.environ["DB_PASSWORD"]
 
-DB_HOST     = os.environ["DB_HOST"]
-DB_PORT     = os.environ["DB_PORT"]
-DB_NAME     = os.environ["DB_NAME"]
-DB_USER     = os.environ["DB_USER"]
-DB_PASSWORD = os.environ["DB_PASSWORD"]
+# User credentials — all from .env
+PUBLIC_USER_NAME     = os.environ["PUBLIC_USER_NAME"]
+PUBLIC_USER_PASSWORD = os.environ["PUBLIC_USER_PASSWORD"]
+TLT_ANALYST_NAME     = os.environ["TLT_ANALYST_NAME"]
+TLT_ANALYST_PASSWORD = os.environ["TLT_ANALYST_PASSWORD"]
+ELRON_ANALYST_NAME   = os.environ["ELRON_ANALYST_NAME"]
+ELRON_ANALYST_PASSWORD = os.environ["ELRON_ANALYST_PASSWORD"]
+DATA_ENGINEER_NAME   = os.environ["DATA_ENGINEER_NAME"]
+DATA_ENGINEER_PASSWORD = os.environ["DATA_ENGINEER_PASSWORD"]
 
 session = requests.Session()
 
-# ── Wait for Superset ─────────────────────────────────────────
-def wait_for_superset(retries: int = 20, delay: int = 5) -> bool:
+def wait_for_superset(retries=20, delay=5):
     print("Waiting for Superset...")
     for i in range(retries):
         try:
@@ -44,259 +57,676 @@ def wait_for_superset(retries: int = 20, delay: int = 5) -> bool:
             pass
         print(f"  Not ready ({i+1}/{retries}), retry in {delay}s...")
         time.sleep(delay)
-    print("Superset unavailable.")
     return False
 
-# ── Login ─────────────────────────────────────────────────────
 def login():
-    r = session.post(
-        f"{SUPERSET_URL}/api/v1/security/login",
-        json={
-            "username": SUPERSET_USER,
-            "password": SUPERSET_PASSWORD,
-            "provider": "db",
-            "refresh":  True,
-        }
-    )
+    r = session.post(f"{SUPERSET_URL}/api/v1/security/login",
+        json={"username": SUPERSET_USER, "password": SUPERSET_PASSWORD,
+              "provider": "db", "refresh": True})
     r.raise_for_status()
     token = r.json()["access_token"]
-    session.headers.update({
-        "Authorization": f"Bearer {token}",
-        "Content-Type":  "application/json",
-        "Accept":        "application/json",
-    })
+    session.headers.update({"Authorization": f"Bearer {token}",
+                             "Content-Type": "application/json",
+                             "Accept": "application/json"})
     r = session.get(f"{SUPERSET_URL}/api/v1/security/csrf_token/")
     r.raise_for_status()
     session.headers.update({"X-CSRFToken": r.json()["result"]})
     print(f"Logged in as {SUPERSET_USER}")
 
-# ── Database connection ───────────────────────────────────────
-def create_database() -> int:
-    sqlalchemy_uri = (
-        f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}"
-        f"@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-    )
-    r = session.get(f"{SUPERSET_URL}/api/v1/database/")
+def create_database():
+    uri = (f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}"
+           f"@{DB_HOST}:{DB_PORT}/{DB_NAME}")
+
+    # Try to create — if 422 (already exists), find it via SQL Lab databases
+    r = session.post(f"{SUPERSET_URL}/api/v1/database/",
+        json={"database_name": DB_NAME, "sqlalchemy_uri": uri,
+              "expose_in_sqllab": True, "allow_run_async": False})
+
+    if r.ok:
+        db_id = r.json()["id"]
+        print(f"Created database (id={db_id})")
+        return db_id
+
+    if r.status_code == 422:
+        # Database exists — find it via the SQL Lab endpoint which has broader access
+        r2 = session.get(f"{SUPERSET_URL}/api/v1/database/?q=(page_size:100)")
+        dbs = r2.json().get("result", [])
+        for db in dbs:
+            if db["database_name"] == DB_NAME:
+                print(f"Database already exists (id={db['id']})")
+                return db["id"]
+
+        # Try the datasets endpoint to find db_id
+        r3 = session.get(f"{SUPERSET_URL}/api/v1/dataset/?q=(page_size:100)")
+        if r3.ok:
+            for ds in r3.json().get("result", []):
+                db_info = ds.get("database", {})
+                if db_info.get("database_name") == DB_NAME:
+                    db_id = db_info["id"]
+                    print(f"Found database via datasets (id={db_id})")
+                    return db_id
+
+        # Last resort — assume id=1 (first database created)
+        print("Database exists but not found via API — using id=1")
+        return 1
+
     r.raise_for_status()
-    for db in r.json().get("result", []):
-        if db["database_name"] == DB_NAME:
-            print(f"Database already exists (id={db['id']})")
-            return db["id"]
 
-    r = session.post(
-        f"{SUPERSET_URL}/api/v1/database/",
-        json={
-            "database_name":    DB_NAME,
-            "sqlalchemy_uri":   sqlalchemy_uri,
-            "expose_in_sqllab": True,
-            "allow_run_async":  False,
-        }
-    )
-    if not r.ok:
-        print(f"Database error {r.status_code}: {r.text}")
-        r.raise_for_status()
-    db_id = r.json()["id"]
-    print(f"Created database connection (id={db_id})")
-    return db_id
-
-# ── Datasets ──────────────────────────────────────────────────
-def create_dataset(db_id: int, schema: str, table: str) -> int:
-    r = session.get(f"{SUPERSET_URL}/api/v1/dataset/")
+def create_dataset(db_id, schema, table):
+    r = session.get(f"{SUPERSET_URL}/api/v1/dataset/?q=(page_size:100)")
     r.raise_for_status()
     for ds in r.json().get("result", []):
         if ds["table_name"] == table and ds.get("schema") == schema:
-            print(f"Dataset {schema}.{table} already exists (id={ds['id']})")
+            print(f"Dataset {schema}.{table} exists (id={ds['id']})")
             return ds["id"]
 
-    r = session.post(
-        f"{SUPERSET_URL}/api/v1/dataset/",
-        json={"database": db_id, "schema": schema, "table_name": table}
-    )
-    if not r.ok:
-        print(f"Dataset error {r.status_code}: {r.text}")
-        r.raise_for_status()
-    ds_id = r.json()["id"]
-    print(f"Created dataset {schema}.{table} (id={ds_id})")
-    return ds_id
+    r = session.post(f"{SUPERSET_URL}/api/v1/dataset/",
+        json={"database": db_id, "schema": schema, "table_name": table})
 
-# ── Charts ────────────────────────────────────────────────────
-def create_chart(name: str, viz_type: str, ds_id: int, params: dict) -> int:
-    r = session.get(f"{SUPERSET_URL}/api/v1/chart/")
+    if r.ok:
+        ds_id = r.json()["id"]
+        print(f"Created dataset {schema}.{table} (id={ds_id})")
+        return ds_id
+
+    if r.status_code == 422:
+        # Dataset exists but not visible via GET — find it by table name
+        r2 = session.get(f"{SUPERSET_URL}/api/v1/dataset/?q=(page_size:100)")
+        for ds in r2.json().get("result", []):
+            if ds["table_name"] == table:
+                print(f"Dataset {schema}.{table} exists (id={ds['id']})")
+                return ds["id"]
+        # Try page 2+
+        for page in range(1, 5):
+            r3 = session.get(f"{SUPERSET_URL}/api/v1/dataset/",
+                             params={"q": f"(page:{page},page_size:100)"})
+            if not r3.ok:
+                break
+            results = r3.json().get("result", [])
+            for ds in results:
+                if ds["table_name"] == table and ds.get("schema") == schema:
+                    print(f"Dataset {schema}.{table} found page {page} (id={ds['id']})")
+                    return ds["id"]
+            if len(results) < 100:
+                break
+        print(f"Dataset {schema}.{table} exists (422) but id unknown — skipping")
+        return None
+
     r.raise_for_status()
-    for chart in r.json().get("result", []):
-        if chart["slice_name"] == name:
-            print(f"Chart '{name}' already exists (id={chart['id']})")
-            return chart["id"]
 
-    r = session.post(
-        f"{SUPERSET_URL}/api/v1/chart/",
-        json={
-            "slice_name":      name,
-            "viz_type":        viz_type,
-            "datasource_id":   ds_id,
-            "datasource_type": "table",
-            "params":          json.dumps(params),
-        }
-    )
+def refresh_dataset(ds_id):
+    r = session.put(f"{SUPERSET_URL}/api/v1/dataset/{ds_id}/refresh")
+    print(f"Refreshed dataset id={ds_id}" if r.ok else f"Refresh failed {ds_id}")
+
+def get_all_charts():
+    charts, page = [], 0
+    while True:
+        r = session.get(f"{SUPERSET_URL}/api/v1/chart/",
+                        params={"q": f"(page:{page},page_size:100)"})
+        r.raise_for_status()
+        results = r.json().get("result", [])
+        charts.extend(results)
+        if len(results) < 100:
+            break
+        page += 1
+    return charts
+
+def create_chart(name, viz_type, ds_id, params):
+    if ds_id is None:
+        print(f"Skipping chart '{name}' — dataset id is None")
+        return None
+    for c in get_all_charts():
+        if c["slice_name"] == name:
+            print(f"Chart '{name}' exists (id={c['id']})")
+            return c["id"]
+    r = session.post(f"{SUPERSET_URL}/api/v1/chart/",
+        json={"slice_name": name, "viz_type": viz_type,
+              "datasource_id": ds_id, "datasource_type": "table",
+              "params": json.dumps(params)})
     if not r.ok:
-        print(f"Chart error {r.status_code}: {r.text}")
+        print(f"Chart error {r.status_code}: {r.text[:200]}")
         r.raise_for_status()
     chart_id = r.json()["id"]
     print(f"Created chart '{name}' (id={chart_id})")
     return chart_id
 
-# ── Dashboard ─────────────────────────────────────────────────
-def create_dashboard() -> int:
-    r = session.get(f"{SUPERSET_URL}/api/v1/dashboard/")
+def create_dashboard(title):
+    r = session.get(f"{SUPERSET_URL}/api/v1/dashboard/?q=(page_size:100)")
     r.raise_for_status()
-    for dash in r.json().get("result", []):
-        if dash["dashboard_title"] == "Public Transport Analytics - Estonia":
-            print(f"Dashboard already exists (id={dash['id']})")
-            return dash["id"]
+    for d in r.json().get("result", []):
+        if d["dashboard_title"] == title:
+            print(f"Dashboard '{title}' exists (id={d['id']})")
+            return d["id"]
+    r = session.post(f"{SUPERSET_URL}/api/v1/dashboard/",
+        json={"dashboard_title": title, "published": True})
+    r.raise_for_status()
+    dash_id = r.json()["id"]
+    print(f"Created dashboard '{title}' (id={dash_id})")
+    return dash_id
+
+def add_charts_to_dashboard(dash_id, chart_ids):
+    valid = [c for c in chart_ids if c is not None]
+    if not valid:
+        print(f"  No charts to add to dashboard {dash_id}")
+        return
+    # Superset 6.0.0: charts added via PUT with json_metadata
+    # The chart_configuration key maps chart ids to their config
+    chart_config = {str(cid): {"id": cid} for cid in valid}
+    r = session.put(
+        f"{SUPERSET_URL}/api/v1/dashboard/{dash_id}",
+        json={"json_metadata": json.dumps({
+            "chart_configuration": chart_config,
+            "global_chart_configuration": {"scope": {"rootPath": ["ROOT_ID"], "excluded": []}, "chartsInScope": valid}
+        })}
+    )
+    if r.ok:
+        print(f"  Added {len(valid)} charts to dashboard {dash_id}")
+    else:
+        print(f"  Dashboard {dash_id} chart assignment: {r.status_code} {r.text[:100]}")
+
+# ── Filter helpers ────────────────────────────────────────────
+def op_filter(operator):
+    return [{
+        "clause": "WHERE",
+        "expressionType": "SIMPLE",
+        "subject": "operator",
+        "operator": "==",
+        "comparator": operator
+    }]
+
+def today_filter():
+    return [{
+        "clause": "WHERE",
+        "expressionType": "SQL",
+        "sqlExpression": "snapshot_date = CURRENT_DATE"
+    }]
+
+# ── Roles ─────────────────────────────────────────────────────
+def get_role_id(role_name: str) -> int | None:
+    """Get role id by name."""
+    r = session.get(f"{SUPERSET_URL}/api/v1/security/roles/",
+                    params={"q": f"(page_size:100)"})
+    r.raise_for_status()
+    for role in r.json().get("result", []):
+        if role["name"] == role_name:
+            return role["id"]
+    return None
+
+def create_role(name: str, permissions: list[str] = None) -> int:
+    """Create a Superset role. Returns role id."""
+    existing = get_role_id(name)
+    if existing:
+        print(f"Role '{name}' already exists (id={existing})")
+        return existing
+    r = session.post(f"{SUPERSET_URL}/api/v1/security/roles/",
+                     json={"name": name})
+    if not r.ok:
+        print(f"Role error {r.status_code}: {r.text[:200]}")
+        r.raise_for_status()
+    role_id = r.json()["id"]
+    print(f"Created role '{name}' (id={role_id})")
+    return role_id
+
+# ── Users ──────────────────────────────────────────────────────
+def create_user(username: str, password: str, first_name: str,
+                last_name: str, email: str, role_names: list[str]):
+    """Create a Superset user with given roles."""
+    # Check if user exists
+    r = session.get(f"{SUPERSET_URL}/api/v1/security/users/",
+                    params={"q": "(page_size:100)"})
+    r.raise_for_status()
+    for u in r.json().get("result", []):
+        if u["username"] == username:
+            print(f"User '{username}' already exists (id={u['id']})")
+            return u["id"]
+
+    # Get role ids
+    role_ids = []
+    for rname in role_names:
+        rid = get_role_id(rname)
+        if rid:
+            role_ids.append(rid)
+        else:
+            print(f"  Warning: role '{rname}' not found")
 
     r = session.post(
-        f"{SUPERSET_URL}/api/v1/dashboard/",
+        f"{SUPERSET_URL}/api/v1/security/users/",
         json={
-            "dashboard_title": "Public Transport Analytics - Estonia",
-            "published":       True,
+            "username":   username,
+            "password":   password,
+            "first_name": first_name,
+            "last_name":  last_name,
+            "email":      email,
+            "roles":      role_ids,
+            "active":     True,
         }
     )
     if not r.ok:
-        print(f"Dashboard error {r.status_code}: {r.text}")
-        r.raise_for_status()
-    dash_id = r.json()["id"]
-    print(f"Created dashboard (id={dash_id})")
-    return dash_id
+        print(f"User error {r.status_code}: {r.text[:200]}")
+        return None
+    user_id = r.json()["id"]
+    print(f"Created user '{username}' (id={user_id}) roles={role_names}")
+    return user_id
 
-# ── Main ──────────────────────────────────────────────────────
 def setup_superset():
     if not wait_for_superset():
         return
-
     login()
-
-    # 1. Database
     db_id = create_database()
 
-    # 2. Datasets — gold (clean analytics) + bronze (raw for debugging)
-    ds_latest     = create_dataset(db_id, "gold",   "latest_positions")
-    ds_fleet      = create_dataset(db_id, "gold",   "fleet_summary")
-    ds_fuel_cost  = create_dataset(db_id, "gold",   "fuel_cost_daily")
-    ds_fuel_daily = create_dataset(db_id, "gold",   "fuel_daily")
-    ds_fuel       = create_dataset(db_id, "bronze", "fuel_prices")
-    ds_elron      = create_dataset(db_id, "silver", "elron_positions")
+    print("\n--- Creating datasets ---")
+    ds_latest       = create_dataset(db_id, "gold",   "latest_positions")
+    ds_fleet        = create_dataset(db_id, "gold",   "fleet_summary")
+    ds_fuel_cost    = create_dataset(db_id, "gold",   "fuel_cost_daily")
+    ds_fuel_daily   = create_dataset(db_id, "gold",   "fuel_daily")
+    ds_fuel_disc    = create_dataset(db_id, "gold",   "fuel_with_discount")
+    ds_route_act    = create_dataset(db_id, "gold",   "route_activity")
+    ds_route_dist   = create_dataset(db_id, "gold",   "route_distances")
+    ds_elron_delays = create_dataset(db_id, "gold",   "elron_delays")
+    ds_veh_delays   = create_dataset(db_id, "gold",   "vehicle_delays")
+    ds_veh_speed    = create_dataset(db_id, "gold",   "vehicle_speed")
+    ds_fuel         = create_dataset(db_id, "bronze", "fuel_prices")
+    ds_elron        = create_dataset(db_id, "silver", "elron_positions")
+    ds_route_km     = create_dataset(db_id, "gold",   "route_daily_km")
 
-    # 3. Charts
+    print("\n--- Refreshing datasets ---")
+    for ds_id in [ds_fuel_cost, ds_route_dist, ds_elron_delays,
+                  ds_veh_speed, ds_veh_delays, ds_route_act]:
+        refresh_dataset(ds_id)
 
-    # Active vehicles — from gold.latest_positions (unique vehicles only)
-    create_chart(
-        "Active Vehicles Now", "big_number_total", ds_latest,
-        {
-            "metric":     "count",
-            "time_range": "No filter",
-        }
+    print("\n--- Creating charts ---")
+
+    # ═══════════════════════════════════════════════════════════
+    # DASHBOARD 1: PUBLIC
+    # ═══════════════════════════════════════════════════════════
+    pub_map = create_chart(
+        "Public - Tallinn Transport Map", "deck_scatter", ds_latest,
+        {"spatial": {"type": "latlong", "lonCol": "lon", "latCol": "lat"},
+         "color_picker": {"r": 0, "g": 122, "b": 255, "a": 1},
+         "dimension": "transport_type",
+         "point_radius_fixed": {"type": "fix", "value": 10},
+         "time_range": "No filter",
+         "row_limit": 600,
+         "mapbox_style": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+         "viewport": {"longitude": 24.75, "latitude": 59.44,
+                      "zoom": 11, "bearing": 0, "pitch": 0}})
+
+    pub_active = create_chart(
+        "Public - Active Vehicles Now", "big_number_total", ds_latest,
+        {"metric": "count", "time_range": "No filter"})
+
+    pub_types = create_chart(
+        "Public - Vehicle Types", "echarts_pie", ds_latest,
+        {"groupby": ["transport_type"], "metric": "count",
+         "time_range": "No filter", "row_limit": 10})
+
+    pub_tlt_table = create_chart(
+        "Public - Tallinn Vehicles", "table", ds_latest,
+        {"all_columns": ["vehicle_id", "line_number", "transport_type",
+                         "destination", "operator"],
+         "time_range": "No filter", "row_limit": 600})
+
+    pub_elron_table = create_chart(
+        "Public - Elron Trains", "table", ds_elron,
+        {"all_columns": ["reis", "liin", "kiirus", "delay_min",
+                         "reisi_staatus", "viimane_peatus"],
+         "time_range": "No filter", "row_limit": 30})
+
+    pub_fuel_prices = create_chart(
+        "Public - Fuel Prices Today", "table", ds_fuel,
+        {"all_columns": ["fuel_type", "price_eur"],
+         "time_range": "No filter", "row_limit": 10})
+
+    pub_fuel_changes = create_chart(
+        "Public - Fuel Price Changes", "table", ds_fuel_daily,
+        {"all_columns": ["fuel_type", "price_today", "price_yesterday",
+                         "change_eur", "change_pct", "date_today"],
+         "time_range": "No filter", "row_limit": 10})
+
+    # ═══════════════════════════════════════════════════════════
+    # DASHBOARD 2: TLT
+    # ═══════════════════════════════════════════════════════════
+    tlt_active = create_chart(
+        "TLT - Active Vehicles Now", "big_number_total", ds_latest,
+        {"metric": "count", "time_range": "No filter",
+         "adhoc_filters": op_filter("TLT")})
+
+    tlt_jam = create_chart(
+        "TLT - Vehicles in Jam Now", "big_number_total", ds_veh_speed,
+        {"metric": {"label": "in_jam_count", "expressionType": "SQL",
+                    "sqlExpression": "COUNT(*) FILTER (WHERE in_jam = true)"},
+         "time_range": "No filter"})
+
+    tlt_hourly = create_chart(
+        "TLT - Active Vehicles by Hour", "echarts_timeseries_bar", ds_route_act,
+        {"metrics": [{"label": "vehicle_count", "expressionType": "SIMPLE",
+                      "column": {"column_name": "vehicle_count"},
+                      "aggregate": "SUM"}],
+         "groupby": ["hour"], "columns": ["transport_type"],
+         "time_range": "No filter", "row_limit": 24,
+         "adhoc_filters": today_filter()})
+
+    tlt_trend = create_chart(
+        "TLT - 7-Day Vehicle Trend", "table", ds_route_act,
+        {"all_columns": ["snapshot_date", "transport_type", "vehicle_count"],
+         "time_range": "No filter", "row_limit": 30})
+
+    tlt_speed = create_chart(
+        "TLT - Vehicle Speed Now", "table", ds_veh_speed,
+        {"all_columns": ["vehicle_id", "line_number", "transport_type",
+                         "speed_kmh", "speed_category", "in_jam",
+                         "destination"],
+         "time_range": "No filter", "row_limit": 100})
+
+    tlt_stops = create_chart(
+        "TLT - Stop Proximity", "table", ds_veh_delays,
+        {"all_columns": ["vehicle_id", "line_number", "transport_type",
+                         "stop_name", "delay_category"],
+         "time_range": "No filter", "row_limit": 100})
+
+    tlt_fuel_cost = create_chart(
+        "TLT - Daily Fuel Cost", "table", ds_fuel_cost,
+        {"all_columns": ["transport_type", "fuel_type", "active_today",
+                         "fleet_total", "utilization_pct",
+                         "estimated_km_per_vehicle",
+                         "estimated_daily_cost_eur", "methodology_note"],
+         "time_range": "No filter", "row_limit": 10,
+         "adhoc_filters": op_filter("TLT")})
+
+    tlt_cost_bar = create_chart(
+        "TLT - Cost by Transport Type", "echarts_timeseries_bar", ds_fuel_cost,
+        {"metrics": [{"label": "estimated_daily_cost_eur",
+                      "expressionType": "SIMPLE",
+                      "column": {"column_name": "estimated_daily_cost_eur"},
+                      "aggregate": "SUM"}],
+         "groupby": ["transport_type"],
+         "time_range": "No filter", "row_limit": 10,
+         "adhoc_filters": op_filter("TLT")})
+
+    tlt_utilization = create_chart(
+        "TLT - Fleet Utilization", "table", ds_fuel_cost,
+        {"all_columns": ["transport_type", "active_today",
+                         "fleet_total", "utilization_pct"],
+         "time_range": "No filter", "row_limit": 10,
+         "adhoc_filters": op_filter("TLT")})
+
+    tlt_fleet = create_chart(
+        "TLT - Fleet Summary", "table", ds_fleet,
+        {"all_columns": ["transport_type", "model", "fuel_type",
+                         "consumption", "consumption_unit", "vehicle_amount"],
+         "time_range": "No filter", "row_limit": 20,
+         "adhoc_filters": op_filter("TLT")})
+
+    tlt_routes = create_chart(
+        "TLT - Route Distances", "table", ds_route_dist,
+        {"all_columns": ["route_long_name", "transport_type",
+                         "avg_one_way_km", "avg_round_trip_km"],
+         "time_range": "No filter", "row_limit": 90,
+         "adhoc_filters": op_filter("TLT")})
+
+    # ═══════════════════════════════════════════════════════════
+    # DASHBOARD 3: ELRON
+    # ═══════════════════════════════════════════════════════════
+    elron_map = create_chart(
+        "Elron - Rongid kaardil", "deck_scatter", ds_elron,
+        {"spatial": {"type": "latlong", "lonCol": "lon", "latCol": "lat"},
+         "dimension": "liin",
+         "point_radius_fixed": {"type": "fix", "value": 15},
+         "time_range": "No filter",
+         "row_limit": 100,
+         "mapbox_style": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+         "viewport": {"longitude": 25.5, "latitude": 58.8,
+                      "zoom": 7, "bearing": 0, "pitch": 0}})
+
+    elron_ontime = create_chart(
+        "Elron - On-Time Rate", "big_number_total", ds_elron_delays,
+        {"metric": {"label": "on_time_pct", "expressionType": "SQL",
+                    "sqlExpression": (
+                        "ROUND(100.0 * COUNT(*) FILTER "
+                        "(WHERE delay_category = 'on_time') "
+                        "/ NULLIF(COUNT(*), 0), 1)")},
+         "time_range": "No filter"})
+
+    elron_trains = create_chart(
+        "Elron - Trains Now", "table", ds_elron,
+        {"all_columns": ["reis", "liin", "kiirus", "delay_min",
+                         "reisi_staatus", "viimane_peatus"],
+         "time_range": "No filter", "row_limit": 30})
+
+    elron_delays = create_chart(
+        "Elron - Delays Detail", "table", ds_elron_delays,
+        {"all_columns": ["reis", "liin", "fuel_type", "vehicle_model",
+                         "delay_min", "delay_category", "reisi_staatus",
+                         "last_stop", "speed_kmh", "hour"],
+         "time_range": "No filter", "row_limit": 50})
+
+    elron_avg_delay = create_chart(
+        "Elron - Average Delay by Route", "echarts_timeseries_bar", ds_elron_delays,
+        {"metrics": [{"label": "avg_delay", "expressionType": "SIMPLE",
+                      "column": {"column_name": "delay_min"},
+                      "aggregate": "AVG"}],
+         "groupby": ["liin"],
+         "time_range": "No filter", "row_limit": 30})
+
+    elron_delay_cat = create_chart(
+        "Elron - Delay Categories", "echarts_pie", ds_elron_delays,
+        {"groupby": ["delay_category"], "metric": "count",
+         "time_range": "No filter", "row_limit": 10})
+
+    elron_delay_hour = create_chart(
+        "Elron - Delay by Hour", "echarts_timeseries_line", ds_elron_delays,
+        {"metrics": [{"label": "avg_delay", "expressionType": "SIMPLE",
+                      "column": {"column_name": "delay_min"},
+                      "aggregate": "AVG"}],
+         "groupby": ["hour"],
+         "time_range": "No filter", "row_limit": 24})
+
+    elron_routes = create_chart(
+        "Elron - Route Distances", "table", ds_route_dist,
+        {"all_columns": ["route_long_name", "transport_type",
+                         "avg_one_way_km", "avg_round_trip_km"],
+         "time_range": "No filter", "row_limit": 35,
+         "adhoc_filters": op_filter("Elron")})
+
+    elron_fuel_cost = create_chart(
+        "Elron - Daily Cost Electric vs Diesel", "table", ds_fuel_cost,
+        {"all_columns": ["fuel_type", "vehicle_model", "active_today",
+                         "utilization_pct", "estimated_km_per_vehicle",
+                         "estimated_daily_cost_eur"],
+         "time_range": "No filter", "row_limit": 10,
+         "adhoc_filters": op_filter("Elron")})
+
+    elron_fleet = create_chart(
+        "Elron - Fleet Summary", "table", ds_fleet,
+        {"all_columns": ["transport_type", "model", "fuel_type",
+                         "consumption", "consumption_unit", "vehicle_amount"],
+         "time_range": "No filter", "row_limit": 10,
+         "adhoc_filters": op_filter("Elron")})
+
+    # ═══════════════════════════════════════════════════════════
+    # DASHBOARD 4: ADMIN
+    # ═══════════════════════════════════════════════════════════
+    admin_fleet = create_chart(
+        "Admin - Full Fleet Summary", "table", ds_fleet,
+        {"all_columns": ["operator", "transport_type", "model", "fuel_type",
+                         "consumption", "consumption_unit", "vehicle_amount"],
+         "time_range": "No filter", "row_limit": 30})
+
+    admin_fuel_cost = create_chart(
+        "Admin - Full Daily Cost", "table", ds_fuel_cost,
+        {"all_columns": ["operator", "transport_type", "fuel_type",
+                         "active_today", "fleet_total", "utilization_pct",
+                         "estimated_km_per_vehicle", "km_source",
+                         "estimated_daily_cost_eur", "methodology_note"],
+         "time_range": "No filter", "row_limit": 20})
+
+    admin_discounts = create_chart(
+        "Admin - Fuel Prices with Discounts", "table", ds_fuel_disc,
+        {"all_columns": ["company", "fuel_type", "pump_price_eur",
+                         "discount_eur", "effective_price_eur",
+                         "saving_vs_private_pct", "price_method",
+                         "price_basis"],
+         "time_range": "No filter", "row_limit": 20})
+
+    admin_eff_price = create_chart(
+        "Admin - Effective Price by Company", "table", ds_fuel_disc,
+        {"all_columns": ["company_label", "fuel_type",
+                         "effective_price_eur", "saving_vs_private_pct"],
+         "time_range": "No filter", "row_limit": 20})
+
+    admin_routes = create_chart(
+        "Admin - All Route Distances", "table", ds_route_dist,
+        {"all_columns": ["operator", "transport_type", "route_long_name",
+                         "avg_one_way_km", "avg_round_trip_km",
+                         "shape_count"],
+         "time_range": "No filter", "row_limit": 120})
+
+    admin_route_km = create_chart(
+        "Admin - Scheduled km Today", "table", ds_route_km,
+        {"all_columns": ["operator", "transport_type", "route_long_name",
+                         "total_trips_scheduled", "scheduled_km_per_day"],
+         "time_range": "No filter", "row_limit": 120})
+
+    admin_fuel_daily = create_chart(
+        "Admin - Fuel Price History", "table", ds_fuel_daily,
+        {"all_columns": ["fuel_type", "price_today", "price_today_avg",
+                         "price_yesterday", "change_eur",
+                         "change_pct", "date_today"],
+         "time_range": "No filter", "row_limit": 10})
+
+    print("\n--- Creating dashboards ---")
+
+    dash_public = create_dashboard("Public Transport - Estonia")
+    add_charts_to_dashboard(dash_public, [
+        pub_map, elron_map,
+        pub_active, pub_types, pub_tlt_table,
+        pub_elron_table, pub_fuel_prices, pub_fuel_changes,
+    ])
+
+    dash_tlt = create_dashboard("TLT - Operatiivanalüüs")
+    add_charts_to_dashboard(dash_tlt, [
+        pub_map,
+        tlt_active, tlt_jam, tlt_hourly, tlt_trend,
+        tlt_speed, tlt_stops,
+        tlt_fuel_cost, tlt_cost_bar, tlt_utilization,
+        tlt_fleet, tlt_routes,
+    ])
+
+    dash_elron = create_dashboard("Elron - Analüüs")
+    add_charts_to_dashboard(dash_elron, [
+        elron_map, elron_ontime, elron_trains, elron_delays,
+        elron_avg_delay, elron_delay_cat, elron_delay_hour,
+        elron_routes, elron_fuel_cost, elron_fleet,
+    ])
+
+    dash_admin = create_dashboard("Admin - Pipeline Monitooring")
+    add_charts_to_dashboard(dash_admin, [
+        admin_fleet, admin_fuel_cost, admin_discounts,
+        admin_eff_price, admin_routes, admin_route_km,
+        admin_fuel_daily,
+    ])
+
+    # ── Roles and Users ──────────────────────────────────────
+    # Dashboard access is controlled by role ownership.
+    # Each analyst role gets access only to their dashboard.
+    # Admin/data_engineer get full access via Admin role.
+    print("\n--- Creating roles and users ---")
+
+    # Create custom read-only roles for each dashboard
+    # These roles are based on Gamma (read-only) but scoped per dashboard
+    # In Superset 6.0.0 dashboard-level access is set via dashboard owners
+    # and role permissions — we assign users to specific dashboards below
+
+    tlt_role_id     = create_role("TLT_Analyst")
+    elron_role_id   = create_role("Elron_Analyst")
+    public_role_id  = create_role("Public_Viewer")
+
+    # Copy Gamma permissions to each custom role
+    gamma_id = get_role_id("Gamma")
+    if gamma_id:
+        r = session.get(
+            f"{SUPERSET_URL}/api/v1/security/roles/{gamma_id}/permissions/")
+        if r.ok:
+            gamma_perms = [p["id"] for p in r.json().get("result", [])]
+            for role_id in [tlt_role_id, elron_role_id, public_role_id]:
+                if gamma_perms:
+                    session.post(
+                        f"{SUPERSET_URL}/api/v1/security/roles/{role_id}/permissions",
+                        json={"permission_view_menu_ids": gamma_perms}
+                    )
+            print(f"  Copied {len(gamma_perms)} Gamma permissions to analyst roles")
+
+    # Create users with their specific roles
+    create_user(
+        username=PUBLIC_USER_NAME,
+        password=PUBLIC_USER_PASSWORD,
+        first_name="Public",
+        last_name="User",
+        email="public@transport.ee",
+        role_names=["Public_Viewer"]
     )
 
-    # Vehicle types — from gold.latest_positions grouped by transport_type
-    create_chart(
-        "Vehicle Types Now", "pie", ds_latest,
-        {
-            "groupby":    ["transport_type"],
-            "metric":     "count",
-            "time_range": "No filter",
-            "row_limit":  10,
-        }
+    create_user(
+        username=TLT_ANALYST_NAME,
+        password=TLT_ANALYST_PASSWORD,
+        first_name="TLT",
+        last_name="Analyst",
+        email="analyst@tlt.ee",
+        role_names=["TLT_Analyst"]
     )
 
-    # Fuel prices — from bronze.fuel_prices latest per fuel_type
-    create_chart(
-        "Fuel Prices Today", "table", ds_fuel,
-        {
-            "all_columns": ["fuel_type", "price_eur"],
-            "time_range":  "No filter",
-            "row_limit":   10,
-        }
+    create_user(
+        username=ELRON_ANALYST_NAME,
+        password=ELRON_ANALYST_PASSWORD,
+        first_name="Elron",
+        last_name="Analyst",
+        email="analyst@elron.ee",
+        role_names=["Elron_Analyst"]
     )
 
-    # Daily fuel cost — from gold.fuel_cost_daily
-    create_chart(
-        "Daily Fuel Cost by Type", "table", ds_fuel_cost,
-        {
-            "all_columns": [
-                "transport_type", "fuel_type", "operator",
-                "active_today", "fleet_total", "utilization_pct",
-                "fuel_price_eur", "estimated_daily_cost_eur"
-            ],
-            "time_range":  "No filter",
-            "row_limit":   20,
-        }
+    create_user(
+        username=DATA_ENGINEER_NAME,
+        password=DATA_ENGINEER_PASSWORD,
+        first_name="Data",
+        last_name="Engineer",
+        email="engineer@transport.ee",
+        role_names=["Admin"]
     )
 
-    # Fleet summary — from gold.fleet_summary
-    create_chart(
-        "Fleet Summary", "table", ds_fleet,
-        {
-            "all_columns": [
-                "operator", "transport_type", "model",
-                "fuel_type", "consumption", "consumption_unit", "vehicle_amount"
-            ],
-            "time_range":  "No filter",
-            "row_limit":   30,
-        }
-    )
+    # Assign dashboard ownership to roles so only relevant role sees each dashboard
+    # In Superset, dashboard visibility for non-admin is controlled by
+    # adding the role as a dashboard owner or via role-based filters
+    print("\n--- Assigning dashboard access by role ---")
 
-    # Elron trains now — from silver.elron_positions latest
-    create_chart(
-        "Elron Trains Now", "table", ds_elron,
-        {
-            "all_columns": [
-                "reis", "liin", "fuel_type", "kiirus",
-                "delay_min", "reisi_staatus", "viimane_peatus"
-            ],
-            "time_range":  "No filter",
-            "row_limit":   30,
-        }
-    )
+    def set_dashboard_roles(dash_id, role_ids):
+        """Set which roles can access a dashboard."""
+        r = session.put(
+            f"{SUPERSET_URL}/api/v1/dashboard/{dash_id}",
+            json={"roles": role_ids}
+        )
+        if r.ok:
+            print(f"  Dashboard {dash_id} → roles {role_ids}")
+        else:
+            print(f"  Dashboard {dash_id} role assignment: {r.status_code} {r.text[:100]}")
 
-    # Fuel price change — from gold.fuel_daily
-    create_chart(
-        "Fuel Price Changes", "table", ds_fuel_daily,
-        {
-            "all_columns": [
-                "fuel_type", "price_today", "price_yesterday",
-                "change_eur", "change_pct", "date_today"
-            ],
-            "time_range":  "No filter",
-            "row_limit":   10,
-        }
-    )
+    # Get Admin role id for admin/data_engineer access
+    admin_role_id = get_role_id("Admin")
 
-    # Tallinn transport table
-    create_chart(
-        "Tallinn Transport Now", "table", ds_latest,
-        {
-            "all_columns": [
-                "vehicle_id", "line_number", "transport_type",
-                "destination", "fuel_type", "operator"
-            ],
-            "time_range":  "No filter",
-            "row_limit":   600,
-        }
-    )
+    # Each dashboard accessible to its specific role + Admin
+    if admin_role_id:
+        set_dashboard_roles(dash_public, [public_role_id,  admin_role_id])
+        set_dashboard_roles(dash_tlt,    [tlt_role_id,     admin_role_id])
+        set_dashboard_roles(dash_elron,  [elron_role_id,   admin_role_id])
+        set_dashboard_roles(dash_admin,  [admin_role_id])
 
-    # 4. Dashboard
-    # NOTE: Tallinn Transport Map must be created manually in Superset:
-    # Charts → + Chart → deck.gl Scatter Plot → gold.latest_positions
-    # Longitude & Latitude: lon | lat
-    # Map Style: https://tile.openstreetmap.org/{z}/{x}/{y}.png
-    # Point Color → dimension: transport_type
-    # Row limit: 500
-    dash_id = create_dashboard()
-
-    print(f"\nSetup complete!")
-    print(f"Open: http://localhost:8088/superset/dashboard/{dash_id}/")
-    print(f"Drag charts onto the dashboard manually.")
-
+    print(f"\n{'='*50}")
+    print(f"Setup complete! 4 dashboards created.")
+    print(f"  Public: http://localhost:8088/superset/dashboard/{dash_public}/")
+    print(f"  TLT:    http://localhost:8088/superset/dashboard/{dash_tlt}/")
+    print(f"  Elron:  http://localhost:8088/superset/dashboard/{dash_elron}/")
+    print(f"  Admin:  http://localhost:8088/superset/dashboard/{dash_admin}/")
+    print(f"\nNOTE: Tallinn Transport Map (deck.gl) requires manual setup.")
+    print(f"  Charts → + Chart → deck.gl Scatter Plot → gold.latest_positions")
+    print(f"  Longitude: lon | Latitude: lat | Color: transport_type")
 
 if __name__ == "__main__":
     setup_superset()

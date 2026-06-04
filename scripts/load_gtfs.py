@@ -6,8 +6,9 @@ Saves to:
   - reference.gtfs_agency
   - reference.gtfs_routes
   - reference.gtfs_stops
-  - reference.gtfs_trips
+  - reference.gtfs_trips      (now includes shape_id)
   - reference.gtfs_stop_times
+  - reference.gtfs_shapes     (Sprint 3 — route distances)
   - reference.gtfs_feed_info  (version tracking)
   - IN/gtfs/YYYY/mmmYYYY/DDMMYYYY_tlt.zip
   - IN/gtfs/YYYY/mmmYYYY/DDMMYYYY_elron.zip
@@ -74,7 +75,14 @@ def get_conn():
 
 # ── Archive path ──────────────────────────────────────────────
 def save_zip_to_archive(data: bytes, operator: str) -> Path:
-    """Save downloaded GTFS zip to IN/gtfs/YYYY/mmmYYYY/ archive."""
+    """
+    Save downloaded GTFS zip to IN/gtfs/YYYY/mmmYYYY/ archive.
+
+    De-duplication: GTFS changes weekly (TLT) or monthly (Elron).
+    Skip saving if a zip of the same size already exists this month
+    to avoid storing identical 6-8MB files daily.
+    One zip per feed version is enough for audit purposes.
+    """
     now    = datetime.now()
     folder = (
         Path(IN_BASE) / "gtfs"
@@ -82,10 +90,23 @@ def save_zip_to_archive(data: bytes, operator: str) -> Path:
         / now.strftime("%b%Y").lower()
     )
     folder.mkdir(parents=True, exist_ok=True)
+
+    # Check if any existing zip this month has the same size (same file)
+    existing = list(folder.glob(f"*_{operator.lower()}.zip"))
+    new_size  = len(data)
+    for existing_file in existing:
+        if existing_file.stat().st_size == new_size:
+            log.debug(
+                f"GTFS zip unchanged ({new_size} bytes) — "
+                f"skipping archive, existing: {existing_file.name}"
+            )
+            return existing_file
+
+    # New or changed zip — save with today's date
     filepath = folder / f"{now.strftime('%d%m%Y')}_{operator.lower()}.zip"
     with open(filepath, "wb") as f:
         f.write(data)
-    log.debug(f"Saved GTFS zip to {filepath}")
+    log.info(f"Saved new GTFS zip to {filepath} ({new_size / 1024 / 1024:.1f}MB)")
     return filepath
 
 # ── Version check ─────────────────────────────────────────────
@@ -221,11 +242,11 @@ def load_stops(conn, rows: list[dict], operator: str) -> int:
                          location_type, parent_station, operator)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (stop_id) DO UPDATE SET
-                        stop_name  = EXCLUDED.stop_name,
-                        stop_lat   = EXCLUDED.stop_lat,
-                        stop_lon   = EXCLUDED.stop_lon,
-                        operator   = EXCLUDED.operator,
-                        updated_at = NOW()
+                        stop_name      = EXCLUDED.stop_name,
+                        stop_lat       = EXCLUDED.stop_lat,
+                        stop_lon       = EXCLUDED.stop_lon,
+                        operator       = EXCLUDED.operator,
+                        updated_at     = NOW()
                 """, (
                     r["stop_id"],
                     r.get("stop_name", ""),
@@ -246,6 +267,7 @@ def load_stops(conn, rows: list[dict], operator: str) -> int:
 
 
 def load_trips(conn, rows: list[dict], operator: str) -> int:
+    """Load trips — now includes shape_id."""
     cur   = conn.cursor()
     count = 0
     try:
@@ -254,10 +276,11 @@ def load_trips(conn, rows: list[dict], operator: str) -> int:
                 cur.execute("""
                     INSERT INTO reference.gtfs_trips
                         (trip_id, route_id, service_id, trip_headsign,
-                         direction_id, operator)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                         direction_id, shape_id, operator)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (trip_id) DO UPDATE SET
                         trip_headsign = EXCLUDED.trip_headsign,
+                        shape_id      = EXCLUDED.shape_id,
                         updated_at    = NOW()
                 """, (
                     r["trip_id"],
@@ -265,6 +288,7 @@ def load_trips(conn, rows: list[dict], operator: str) -> int:
                     r.get("service_id", ""),
                     r.get("trip_headsign", ""),
                     int(r.get("direction_id") or 0),
+                    r.get("shape_id") or None,
                     operator
                 ))
                 count += 1
@@ -321,6 +345,74 @@ def load_stop_times(conn, rows: list[dict], batch_size: int = 5000) -> int:
     return count
 
 
+def load_shapes(conn, rows: list[dict], operator: str,
+                batch_size: int = 10000) -> int:
+    """
+    Load shapes.txt into reference.gtfs_shapes.
+    Batched — TLT shapes.txt is large (~500k+ rows).
+    shape_dist_traveled is in METERS (cumulative).
+    """
+    cur   = conn.cursor()
+    count = 0
+    batch = []
+
+    # Clear existing shapes for this operator before reload
+    try:
+        cur.execute(
+            "DELETE FROM reference.gtfs_shapes WHERE operator = %s",
+            (operator,)
+        )
+        conn.commit()
+        log.debug(f"Cleared old shapes for {operator}")
+    except Exception as e:
+        conn.rollback()
+        log.error(f"Clear shapes failed: {e}")
+        return 0
+
+    try:
+        for r in rows:
+            try:
+                dist = r.get("shape_dist_traveled", "").strip()
+                batch.append((
+                    r["shape_id"].strip(),
+                    float(r["shape_pt_lat"]),
+                    float(r["shape_pt_lon"]),
+                    int(r["shape_pt_sequence"]),
+                    float(dist) if dist else None,
+                    operator,
+                ))
+            except (ValueError, KeyError):
+                continue
+
+            if len(batch) >= batch_size:
+                cur.executemany("""
+                    INSERT INTO reference.gtfs_shapes
+                        (shape_id, shape_pt_lat, shape_pt_lon,
+                         shape_pt_sequence, shape_dist_traveled, operator)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, batch)
+                conn.commit()
+                count += len(batch)
+                log.debug(f"shapes batch: {count} rows inserted for {operator}")
+                batch = []
+
+        if batch:
+            cur.executemany("""
+                INSERT INTO reference.gtfs_shapes
+                    (shape_id, shape_pt_lat, shape_pt_lon,
+                     shape_pt_sequence, shape_dist_traveled, operator)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, batch)
+            conn.commit()
+            count += len(batch)
+
+    except Exception as e:
+        conn.rollback()
+        log.error(f"load_shapes failed: {e}")
+
+    return count
+
+
 def save_feed_info(conn, operator: str, version: str, zip_data: bytes):
     """Save feed version info to DB."""
     cur = conn.cursor()
@@ -372,14 +464,27 @@ def load_gtfs_operator(operator: str, url: str, conn, force: bool = False):
     log.info(f"Loading {operator} GTFS version: {new_version}")
 
     # 4. Clear old data for this operator
+    # Delete order must respect FK constraints:
+    #   gtfs_stop_times references both gtfs_trips(trip_id) AND gtfs_stops(stop_id)
+    #   so stop_times must be deleted first via BOTH FKs before stops or trips
     cur = conn.cursor()
     try:
+        # 4a. Delete stop_times that reference this operator's trips
         cur.execute("""
             DELETE FROM reference.gtfs_stop_times
             WHERE trip_id IN (
                 SELECT trip_id FROM reference.gtfs_trips WHERE operator = %s
             )
         """, (operator,))
+        # 4b. Delete stop_times that reference this operator's stops
+        #     (catches any orphaned rows not covered by trip delete)
+        cur.execute("""
+            DELETE FROM reference.gtfs_stop_times
+            WHERE stop_id IN (
+                SELECT stop_id FROM reference.gtfs_stops WHERE operator = %s
+            )
+        """, (operator,))
+        # 4c. Now safe to delete trips, stops, routes, agency
         cur.execute("DELETE FROM reference.gtfs_trips  WHERE operator = %s", (operator,))
         cur.execute("DELETE FROM reference.gtfs_stops  WHERE operator = %s", (operator,))
         cur.execute("DELETE FROM reference.gtfs_routes WHERE operator = %s", (operator,))
@@ -392,25 +497,34 @@ def load_gtfs_operator(operator: str, url: str, conn, force: bool = False):
         return
 
     # 5. Load each file
-    n_agency = load_agency(conn,
+    n_agency  = load_agency(conn,
         read_csv_from_zip(zip_data, "agency.txt"), operator)
-    n_routes = load_routes(conn,
+    n_routes  = load_routes(conn,
         read_csv_from_zip(zip_data, "routes.txt"), operator)
-    n_stops  = load_stops(conn,
+    n_stops   = load_stops(conn,
         read_csv_from_zip(zip_data, "stops.txt"),  operator)
-    n_trips  = load_trips(conn,
+    n_trips   = load_trips(conn,
         read_csv_from_zip(zip_data, "trips.txt"),  operator)
-    n_times  = load_stop_times(conn,
+    n_times   = load_stop_times(conn,
         read_csv_from_zip(zip_data, "stop_times.txt"))
 
-    # 6. Save version info
+    # 6. Load shapes (Sprint 3)
+    shapes_rows = read_csv_from_zip(zip_data, "shapes.txt")
+    if shapes_rows:
+        n_shapes = load_shapes(conn, shapes_rows, operator)
+        log.info(f"{operator} shapes loaded: {n_shapes} rows")
+    else:
+        n_shapes = 0
+        log.warning(f"{operator} shapes.txt not found in GTFS zip")
+
+    # 7. Save version info
     save_feed_info(conn, operator, new_version, zip_data)
 
     elapsed = (time.time() - start) / 60
     log.info(
         f"{operator} GTFS loaded in {elapsed:.1f}min — "
         f"agency={n_agency} routes={n_routes} stops={n_stops} "
-        f"trips={n_trips} stop_times={n_times}"
+        f"trips={n_trips} stop_times={n_times} shapes={n_shapes}"
     )
 
 # ── Public API ────────────────────────────────────────────────

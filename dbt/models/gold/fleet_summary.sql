@@ -2,18 +2,16 @@
 -- gold.fleet_summary
 -- Vehicle fleet overview from reference data
 -- Shows all models with consumption and vehicle count
+--
+-- Sprint 3 fix: removed CASE o.code WHEN 'Elron' THEN 'train' workaround.
+-- Elron now uses line_type_code = 4 (train) in reference.vehicle_models,
+-- so lt.name correctly returns 'train' for all Elron models.
 -- =============================================================
 
 SELECT
     o.name                          AS operator,
-    CASE o.code
-        WHEN 'Elron' THEN 'train'
-        ELSE lt.name
-    END                             AS transport_type,
-    CASE o.code
-        WHEN 'Elron' THEN 'rong'
-        ELSE lt.name_et
-    END                             AS transport_type_et,
+    lt.name                         AS transport_type,
+    lt.name_et                      AS transport_type_et,
     m.model,
     m.fuel_type_code                AS fuel_type,
     ft.name                         AS fuel_name,

@@ -26,6 +26,12 @@ models:
     silver:
       +materialized: table
       +schema: silver
+      # vehicle_positions is incremental — only processes new bronze rows
+      # First run: full table build (~245s)
+      # Subsequent runs: only new rows since last ingested_at (~1s)
+      vehicle_positions:
+        +materialized: incremental
+        +unique_key: id
     gold:
       +materialized: table
       +schema: gold

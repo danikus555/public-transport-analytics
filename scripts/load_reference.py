@@ -63,6 +63,9 @@ def load_static(conn):
         ('SEBE',  'SEBE',                    'Regional', 'https://sebe.ee'),
     ])
 
+    # line_types.code maps TLT GPS feed col[0] for TLT vehicles
+    # code 4 = train, used exclusively for Elron (not in TLT GPS feed)
+    # NOTE: these codes are NOT GTFS route_type values — do not mix them
     cur.executemany("""
         INSERT INTO reference.line_types (code, name, name_et, fuel_category)
         VALUES (%s, %s, %s, %s)
@@ -71,6 +74,7 @@ def load_static(conn):
         (1, 'tram',       'tramm', 'electric'),
         (2, 'bus',        'buss',  'mixed'),
         (3, 'trolleybus', 'troll', 'electric'),
+        (4, 'train',      'rong',  'mixed'),     # Elron only
     ])
 
     cur.executemany("""
@@ -265,10 +269,12 @@ def scrape_tlt_fleet() -> list[dict]:
 
     # ── Elron — manual (no public fleet page) ────────────────
     # Source: https://elron.ee/elronist/elroni-rongid
+    # line_type_code = 4 (train) — NOT 2 (bus)
+    # code 4 was added to reference.line_types specifically for Elron
     models += [
         {
             "operator_code":    "Elron",
-            "line_type_code":   2,
+            "line_type_code":   4,              # train
             "model":            "Stadler FLIRT DMU",
             "fuel_type_code":   "diesel",
             "consumption":      3.5,
@@ -277,7 +283,7 @@ def scrape_tlt_fleet() -> list[dict]:
         },
         {
             "operator_code":    "Elron",
-            "line_type_code":   2,
+            "line_type_code":   4,              # train
             "model":            "Stadler FLIRT EMU",
             "fuel_type_code":   "electric",
             "consumption":      8.0,
@@ -286,7 +292,7 @@ def scrape_tlt_fleet() -> list[dict]:
         },
         {
             "operator_code":    "Elron",
-            "line_type_code":   2,
+            "line_type_code":   4,              # train
             "model":            "Škoda 21Ev (pikamaa)",
             "fuel_type_code":   "electric",
             "consumption":      8.0,
@@ -295,7 +301,7 @@ def scrape_tlt_fleet() -> list[dict]:
         },
         {
             "operator_code":    "Elron",
-            "line_type_code":   2,
+            "line_type_code":   4,              # train
             "model":            "Škoda 21Ev (linnalähirong)",
             "fuel_type_code":   "electric",
             "consumption":      6.0,

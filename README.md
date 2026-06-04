@@ -4,13 +4,15 @@ Daniil Titov
 
 ## Äriküsimus
 
-> **Kuidas toimib Tallinna ja Eesti ühistransport reaalajas — mitu sõidukit on liikvel, mis marsruutidel, ja kas ühistransport on alternatiiv autole?**
+> **Kuidas toimib Tallinna ja Eesti ühistransport reaalajas — mitu sõidukit on liikvel, mis marsruutidel, kas Elroni rongid sõidavad graafiku järgi, ja kui palju maksab ühistranspordi käitamine päevas?**
 
 Analüüs ühendab TLT GPS andmed, Elroni reaalajas rongide positsioonid,
 kütuse- ja elektrihinnad ning GTFS sõiduplaani.
 
-**Lisaavastus:** andmete kombineerimisel osutus võimalikuks arvutada teoreetiline
-päevane kütusekulu transpordiliigi järgi (±25% täpsusega).
+**Avastused andmetega töötades:**
+- TLT bussides ei ole võimalik GPS põhjal tuvastada kütuse tüüpi sõiduki tasandil — kütusekulu arvutatakse laevastiku proportsioonide põhjal
+- Elroni API tagastab hilinemisandmed otse — ei vaja GTFS-RT-d
+- Nord Pool elektri börsihind muutub tunni kaupa (0.003–0.29 €/kWh) — operaatorid kasutavad lepingulist hinda
 
 ## Arhitektuur
 
@@ -19,7 +21,7 @@ flowchart LR
     A[GPS\ntransport.tallinn.ee] -->|60s| B[ingest_gps.py]
     C[Elron\nelron.ee] -->|30s| D[ingest_elron.py]
     E[Kütus\nteadmiseks.ee\nelering.ee\nalexela.ee] -->|päevane| F[ingest_fuel.py]
-    G[GTFS TLT+Elron] -->|nädalas/kuus| H[load_gtfs.py]
+    G[GTFS TLT+Elron\neu-gtfs.remix.com] -->|nädalas/kuus| H[load_gtfs.py]
     I[Laevastik\ntlt.ee, elron.ee] -->|nädalas| J[load_reference.py]
 
     B & D & F --> K[(bronze)]
@@ -36,13 +38,13 @@ Täpsem kirjeldus: [docs/arhitektuur.md](docs/arhitektuur.md)
 
 ## Stack
 
-| Komponent | Tööriist |
-|---|---|
-| Andmebaas | pgduckdb (PostgreSQL + DuckDB) |
-| Sissevõtt | Python + APScheduler |
-| Transformatsioon | dbt-postgres 1.8.0 |
-| Dashboard | Apache Superset 6.0.0 |
-| Konteineriseerimine | Docker Compose |
+| Komponent | Tööriist | Versioon |
+|---|---|---|
+| Andmebaas | pgduckdb (PostgreSQL + DuckDB) | 18-v1.1.1 |
+| Sissevõtt | Python + APScheduler | 3.11 |
+| Transformatsioon | dbt-postgres | 1.8.0 |
+| Dashboard | Apache Superset | 6.0.0 |
+| Konteineriseerimine | Docker Compose | v2 |
 
 ## Käivitamine
 
@@ -50,12 +52,25 @@ Täpsem kirjeldus: [docs/arhitektuur.md](docs/arhitektuur.md)
 git clone https://github.com/danikus555/public-transport-analytics.git
 cd public-transport-analytics
 cp .env.example .env
-# Muuda .env paroolid
-docker compose up -d --build
-# Oota ~60s
+# Muuda .env paroolid (vaata .env.example kommentaare)
+docker compose up -d
+# Oota ~90s kuni Superset initsialiseerub
 docker exec transport-pipeline python scripts/setup_superset.py
 # Dashboard: http://localhost:8088
 ```
+
+**Esimene käivitamine:** GTFS laadimine võtab ~5 minutit (1.17M stop_times rida).
+Järgnevad käivitamised jätavad vahele kui fail pole muutunud (~2s).
+
+## Kasutajad
+
+| Kasutajanimi | Parool (.env) | Roll | Näidikulaud |
+|---|---|---|---|
+| `admin` | `SUPERSET_ADMIN_PASSWORD` | Admin | Kõik |
+| `data_engineer` | `DATA_ENGINEER_PASSWORD` | Admin | Kõik |
+| `tlt_analyst` | `TLT_ANALYST_PASSWORD` | Gamma (ainult lugemine) | TLT analüüs |
+| `elron_analyst` | `ELRON_ANALYST_PASSWORD` | Gamma (ainult lugemine) | Elron analüüs |
+| `public_user` | `PUBLIC_USER_PASSWORD` | Gamma (ainult lugemine) | Avalik vaade |
 
 ## Andmeallikad
 
@@ -64,68 +79,112 @@ docker exec transport-pipeline python scripts/setup_superset.py
 | `transport.tallinn.ee/gps.txt` | TLT bussid, trammid | Iga 60s |
 | `elron.ee/map_data.json` | Rongide positsioonid, hilinemised | Iga 30s |
 | `teadmiseks.ee` | 95, 98, Diesel hinnad | Päevane |
-| `dashboard.elering.ee/api/nps/price` | Elektri börsihind | Iga 15min |
-| `alexela.ee` | CNG hind | Iganädalane |
-| `eu-gtfs.remix.com/tallinn.zip` | TLT 81 marsruuti | Nädalas |
-| `eu-gtfs.remix.com/elron.zip` | Elron 28 marsruuti | Kuus |
+| `dashboard.elering.ee/api/nps/price` | Elektri börsihind (Nord Pool) | Iga 15min |
+| `alexela.ee` | CNG hind (~4x aastas muutub) | Käsitsi uuendus |
+| `eu-gtfs.remix.com/tallinn.zip` | TLT 81 marsruuti + shapes | Nädalas |
+| `eu-gtfs.remix.com/elron.zip` | Elron 28 marsruuti + shapes | Kuus |
+
+## dbt mudelid
+
+| Mudel | Kiht | Kirjeldus |
+|---|---|---|
+| `vehicle_positions` | silver | GPS + GTFS join, enkodeering parandatud |
+| `elron_positions` | silver | Elron + kütuse tüüp, deduplitseeritud |
+| `latest_positions` | gold | Viimane positsioon iga sõiduki kohta |
+| `fleet_summary` | gold | Laevastiku kokkuvõte mudeli järgi |
+| `fuel_cost_daily` | gold | Päevane kütusekulu operaatori ja kütuse tüübi järgi |
+| `fuel_daily` | gold | Kütusehinna muutus eelmise päevaga |
+| `fuel_with_discount` | gold | Lepingulised hinnad vs börsihind |
+| `route_activity` | gold | Aktiivsed sõidukid liini ja tunni järgi (7 päeva) |
+| `route_distances` | gold | Tegelik marsruudi pikkus GTFS shapes põhjal |
+| `route_daily_km` | gold | Planeeritud päevased km nädalapäeva järgi |
+| `elron_delays` | gold | Elroni hilinemised reaalajas |
+| `vehicle_delays` | gold | TLT sõidukite lähedus peatustele |
+| `vehicle_speed` | gold | Sõidukiiruse ja ummiku tuvastus |
+
+## Andmekvaliteedi testid
+
+```bash
+docker exec transport-dbt dbt test --project-dir /app/dbt --profiles-dir /app/dbt
+# Tulemus: PASS=18 WARN=0 ERROR=0
+```
+
+| Test | Tabel | Veerg |
+|---|---|---|
+| `not_null` | bronze.vehicle_positions | vehicle_id, lat, lon, ingested_at, operator |
+| `not_null` | bronze.elron_positions | liin, lat, lon |
+| `not_null` | bronze.fuel_prices | fuel_type, price_eur |
+| `not_null` + `unique` | reference.vehicle_models | id, model, consumption |
+| `accepted_values` | bronze.vehicle_positions | operator IN ('TLT', 'Elron') |
+| `accepted_values` | bronze.fuel_prices | fuel_type IN ('95','98','Diesel','electric','CNG') |
+| `not_null` + `unique` | bronze.client_discounts | company, fuel_type |
+
+## Tulemused (Sprint 3)
+
+| Mõõdik | Väärtus |
+|---|---|
+| dbt mudelid | 13 |
+| dbt testid | PASS=18 WARN=0 ERROR=0 |
+| dbt run aeg | **4.42s** (oli 578s) |
+| TLT aktiivsed sõidukid (päeval) | ~460–580 |
+| Elroni aktiivsed rongid (päeval) | 11–20 |
+| TLT busside kütusekulu | ~47,000–50,000 €/päev |
+| Elroni kütusekulu | ~700–1,100 €/päev |
+| Näidikulaudu | 4 |
+| Graafikuid | 35 |
 
 ## Projekti struktuur
 
 ```
 public-transport-analytics/
-├── compose.yml
+├── compose.yaml
 ├── .env.example
 ├── Dockerfile.pipeline
 ├── Dockerfile.dbt
 ├── Dockerfile.superset
-├── requirements.pipeline.txt
+├── superset_config.py
+├── requirements_pipeline.txt
 ├── init/
-│   ├── 01_schemas.sql
-│   └── 02_schemas.sql
+│   ├── 01_schemas.sql          # bronze, silver, gold, reference skeemid
+│   ├── 02_schemas.sql          # gold täiendavad tabelid
+│   ├── 03_schemas_shapes.sql   # GTFS shapes tabel
+│   └── 04–10_*.sql             # migratsioonid (Elron kütuse tüübid, laevastik)
 ├── scripts/
-│   ├── scheduler.py
-│   ├── ingest_gps.py
-│   ├── ingest_elron.py
-│   ├── ingest_fuel.py
-│   ├── load_gtfs.py
-│   ├── load_reference.py
-│   ├── setup_superset.py
-│   └── logger.py
+│   ├── scheduler.py            # APScheduler — kõik jobid
+│   ├── ingest_gps.py           # TLT GPS sissevõtt
+│   ├── ingest_elron.py         # Elroni rongide sissevõtt
+│   ├── ingest_fuel.py          # Kütusehindade sissevõtt
+│   ├── load_gtfs.py            # GTFS sõiduplaani laadimine
+│   ├── load_reference.py       # Staatiliste andmete laadimine
+│   ├── setup_superset.py       # Superset automaatne seadistamine
+│   ├── cleanup_superset.py     # Duplikaatgraafikute puhastamine
+│   └── logger.py               # Loguru 3-kanalilne logimine
 ├── dbt/
 │   ├── dbt_project.yml
 │   ├── profiles.yml
 │   ├── macros/
+│   │   ├── normalise_liin.sql
+│   │   └── generate_schema_name.sql
 │   └── models/
 │       ├── sources.yml
 │       ├── silver/
+│       │   ├── vehicle_positions.sql   # inkrementaalne
+│       │   └── elron_positions.sql
 │       └── gold/
-├── docs/
-│   ├── arhitektuur.md
-│   └── progress.md
-└── IN/
-    ├── gps/
-    ├── elron/
-    └── fuel/
+│           └── *.sql                   # 11 gold mudelit
+└── docs/
+    ├── arhitektuur.md
+    └── progress.md
 ```
 
-## Tulemused (Sprint 2)
+## Puudused
 
-- **500+ sõidukit** reaalajas kaardil
-- **23 Elroni rongi** reaalajas
-- **~184,000€/päev** hinnanguline kütusekulu (peaks täpsustama ja testida)
-- **109 marsruuti** (81 TLT + 28 Elron)
-- **20 sõidukimudelit** tarbimise ja arvuga
-
-## Dashboard kaardi seadistamine (käsitsi)
-1. Charts → + Chart → deck.gl Scatter Plot
-2. Dataset: gold.latest_positions
-3. Query → Longitude & Latitude: lon | lat
-4. Map Style: https://tile.openstreetmap.org/{z}/{x}/{y}.png
-5. Point Color → dimension: transport_type
-6. Row limit: 600
-7. filters: transport_type is not null, line number is not null, destination is not null
-8. legend: transport_type
-9. Save as "Tallinn Transport Map"
+- **TLT hilinemised:** TLT GPS-il puudub graafikust kõrvalekalde väli — bussid/trammid näitavad ainult lähedust peatusele (500m), mitte tegelikku hilinemist
+- **CNG hind:** Alexela CNG lehekülg kasutab JavaScripti — automaatne scraping ei toimi; hind uuendatakse käsitsi DB-s
+- **Superset CE ligipääsu kontroll:** Gamma roll näeb kõiki avaldatud näidikulaudu — per-näidikulaud isolatsioon nõuab Superset Enterprise't
+- **Kütusekulu täpsus:** ±20-30% — nominaalne tarbimine tootja andmetest, GTFS planeeritud km (mitte tegelikult sõidetud)
+- **Elektri hind:** Nord Pool börsihind on volatiilne; tegelik operaatori hind on `fuel_with_discount` tabelis lepinguliste hindadena
+- **Ühe sõlme arhitektuur:** pgduckdb töötab ühe konteinerina ilma replikatsioonita
 
 ## Meeskond
 

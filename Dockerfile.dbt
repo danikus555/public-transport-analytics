@@ -11,16 +11,19 @@ RUN pip install --no-cache-dir psycopg2-binary==2.9.9
 RUN pip install --no-cache-dir dbt-postgres==1.8.0 --no-deps
 RUN pip install --no-cache-dir dbt-core==1.8.0
 
+# dbt models are mounted via volume (./dbt:/app/dbt in compose.yaml)
+# COPY is kept as fallback for standalone builds without volume mount
 COPY dbt/ ./dbt/
 
 RUN mkdir -p logs
 
 # Run dbt every DBT_INTERVAL_MIN minutes in a loop
+# sleep uses seconds (minutes × 60) — 'sleep Nm' not supported in all sh
 # Logs saved to logs/YYYY/mmmYYYY/DDMMYYYY/
 CMD ["sh", "-c", "\
   while true; do \
     LOG_DIR=/app/logs/$(date +%Y)/$(date +%b%Y | tr '[:upper:]' '[:lower:]')/$(date +%d%m%Y); \
     mkdir -p $LOG_DIR; \
     dbt run --project-dir /app/dbt --profiles-dir /app/dbt --log-path $LOG_DIR; \
-    sleep ${DBT_INTERVAL_MIN:-5}m; \
+    sleep $((${DBT_INTERVAL_MIN:-5} * 60)); \
   done"]

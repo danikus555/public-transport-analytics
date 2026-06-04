@@ -117,6 +117,11 @@ def fetch_gps() -> list[dict]:
         tech.error(f"Fetch failed: {e}")
         return []
 
+    # TLT GPS feed is latin-1 encoded but served without charset declaration
+    # requests auto-detects as ISO-8859-1 for text/plain but force it explicitly
+    # to ensure Estonian chars (ä ö ü õ) decode correctly
+    r.encoding = 'latin-1'
+
     rows    = []
     skipped = 0
     for line in r.text.splitlines():

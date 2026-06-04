@@ -33,11 +33,6 @@ DB_NAME           = os.environ["DB_NAME"]
 DB_USER           = os.environ["DB_USER"]
 DB_PASSWORD       = os.environ["DB_PASSWORD"]
 
-# User passwords — set in .env, fallback to defaults
-TLT_ANALYST_PASSWORD     = os.environ.get("TLT_ANALYST_PASSWORD",   "TLT2026!")
-ELRON_ANALYST_PASSWORD   = os.environ.get("ELRON_ANALYST_PASSWORD", "Elron2026!")
-DATA_ENGINEER_PASSWORD   = os.environ.get("DATA_ENGINEER_PASSWORD", "DataEng2026!")
-
 session = requests.Session()
 
 def wait_for_superset(retries=20, delay=5):
@@ -168,73 +163,6 @@ def today_filter():
         "expressionType": "SQL",
         "sqlExpression": "snapshot_date = CURRENT_DATE"
     }]
-
-# ── Roles ─────────────────────────────────────────────────────
-def get_role_id(role_name: str) -> int | None:
-    """Get role id by name."""
-    r = session.get(f"{SUPERSET_URL}/api/v1/security/roles/",
-                    params={"q": f"(page_size:100)"})
-    r.raise_for_status()
-    for role in r.json().get("result", []):
-        if role["name"] == role_name:
-            return role["id"]
-    return None
-
-def create_role(name: str, permissions: list[str] = None) -> int:
-    """Create a Superset role. Returns role id."""
-    existing = get_role_id(name)
-    if existing:
-        print(f"Role '{name}' already exists (id={existing})")
-        return existing
-    r = session.post(f"{SUPERSET_URL}/api/v1/security/roles/",
-                     json={"name": name})
-    if not r.ok:
-        print(f"Role error {r.status_code}: {r.text[:200]}")
-        r.raise_for_status()
-    role_id = r.json()["id"]
-    print(f"Created role '{name}' (id={role_id})")
-    return role_id
-
-# ── Users ──────────────────────────────────────────────────────
-def create_user(username: str, password: str, first_name: str,
-                last_name: str, email: str, role_names: list[str]):
-    """Create a Superset user with given roles."""
-    # Check if user exists
-    r = session.get(f"{SUPERSET_URL}/api/v1/security/users/",
-                    params={"q": "(page_size:100)"})
-    r.raise_for_status()
-    for u in r.json().get("result", []):
-        if u["username"] == username:
-            print(f"User '{username}' already exists (id={u['id']})")
-            return u["id"]
-
-    # Get role ids
-    role_ids = []
-    for rname in role_names:
-        rid = get_role_id(rname)
-        if rid:
-            role_ids.append(rid)
-        else:
-            print(f"  Warning: role '{rname}' not found")
-
-    r = session.post(
-        f"{SUPERSET_URL}/api/v1/security/users/",
-        json={
-            "username":   username,
-            "password":   password,
-            "first_name": first_name,
-            "last_name":  last_name,
-            "email":      email,
-            "roles":      role_ids,
-            "active":     True,
-        }
-    )
-    if not r.ok:
-        print(f"User error {r.status_code}: {r.text[:200]}")
-        return None
-    user_id = r.json()["id"]
-    print(f"Created user '{username}' (id={user_id}) roles={role_names}")
-    return user_id
 
 def setup_superset():
     if not wait_for_superset():
@@ -553,84 +481,6 @@ def setup_superset():
         admin_eff_price, admin_routes, admin_route_km,
         admin_fuel_daily,
     ])
-
-    # ── Grant Public role dataset access ─────────────────────
-    # PUBLIC_ROLE_LIKE = "Gamma" in superset_config.py allows anonymous
-    # access to published dashboards. But the Public role also needs
-    # explicit dataset permissions to query the data.
-    print("\n--- Granting Public role dataset access ---")
-
-    public_role_id = get_role_id("Public")
-    if public_role_id:
-        # Get all permissions
-        r = session.get(
-            f"{SUPERSET_URL}/api/v1/security/permissions-resources/",
-            params={"q": "(page_size:200)"}
-        )
-        if r.ok:
-            perms = r.json().get("result", [])
-            # Find dataset read permissions for public dashboard datasets
-            public_ds_ids = [ds_latest, ds_elron, ds_fuel, ds_fuel_daily]
-            perm_ids = []
-            for p in perms:
-                view_menu = p.get("view_menu", {}).get("name", "")
-                perm_name = p.get("permission", {}).get("name", "")
-                if perm_name == "datasource_access" and any(
-                    str(ds_id) in view_menu for ds_id in public_ds_ids
-                ):
-                    perm_ids.append(p["id"])
-
-            if perm_ids:
-                session.post(
-                    f"{SUPERSET_URL}/api/v1/security/roles/{public_role_id}/permissions",
-                    json={"permission_view_menu_ids": perm_ids}
-                )
-                print(f"  Granted {len(perm_ids)} permissions to Public role")
-            else:
-                print("  No dataset permissions found to grant")
-    else:
-        print("  Public role not found — create it in Settings → Security → Roles")
-
-    # ── Users ────────────────────────────────────────────────
-    print("\n--- Creating users ---")
-
-    # User matrix:
-    #   Anonymous (no login) — PUBLIC_ROLE_LIKE=Gamma in superset_config.py
-    #                           can view published dashboards without login
-    #   admin              — already exists, full access
-    #   data_engineer      — Admin role, same as admin
-    #   tlt_analyst        — Gamma role, read-only
-    #   elron_analyst      — Gamma role, read-only
-
-    # TLT analyst — read-only
-    create_user(
-        username="tlt_analyst",
-        password=TLT_ANALYST_PASSWORD,
-        first_name="TLT",
-        last_name="Analyst",
-        email="analyst@tlt.ee",
-        role_names=["Gamma"]
-    )
-
-    # Elron analyst — read-only
-    create_user(
-        username="elron_analyst",
-        password=ELRON_ANALYST_PASSWORD,
-        first_name="Elron",
-        last_name="Analyst",
-        email="analyst@elron.ee",
-        role_names=["Gamma"]
-    )
-
-    # Data engineer — Admin role (same as admin user)
-    create_user(
-        username="data_engineer",
-        password=DATA_ENGINEER_PASSWORD,
-        first_name="Data",
-        last_name="Engineer",
-        email="engineer@transport.ee",
-        role_names=["Admin"]
-    )
 
     print(f"\n{'='*50}")
     print(f"Setup complete! 4 dashboards created.")

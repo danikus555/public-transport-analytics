@@ -1,5 +1,13 @@
 # public-transport-analytics
 # docker compose up -d --build
+#
+# Resource limits per service (for MacBook Pro 2019 i7, 32GB RAM):
+#   db:          1.0 CPU, 1GB RAM  — main analytical database
+#   pipeline:    0.5 CPU, 512MB    — ingest + scheduler (mostly idle)
+#   dbt:         1.0 CPU, 512MB    — spikes during 5s run window
+#   superset:    0.5 CPU, 1GB      — web UI + chart rendering
+#   superset-db: 0.2 CPU, 256MB    — metadata only, light load
+# Total reserved: 3.2 CPU, 3.25GB — leaves headroom for VS Code etc.
 
 services:
 
@@ -23,6 +31,14 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.02'
+          memory: 256M
     restart: unless-stopped
 
   # ── Superset metadata database ──────────────────────────────
@@ -40,6 +56,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 256M
+        reservations:
+          cpus: '0.02'
+          memory: 64M
     restart: unless-stopped
 
   # ── Pipeline (ingest + scheduler) ──────────────────────────
@@ -74,6 +98,16 @@ services:
       SUPERSET_URL:         http://superset:8088
       LOG_DIR:              /app/logs
       IN_BASE:              /app/IN
+      TZ:                   Europe/Tallinn
+      BRONZE_RETENTION_DAYS: ${BRONZE_RETENTION_DAYS:-7}
+      PUBLIC_USER_NAME:      ${PUBLIC_USER_NAME}
+      PUBLIC_USER_PASSWORD:  ${PUBLIC_USER_PASSWORD}
+      TLT_ANALYST_NAME:      ${TLT_ANALYST_NAME}
+      TLT_ANALYST_PASSWORD:  ${TLT_ANALYST_PASSWORD}
+      ELRON_ANALYST_NAME:    ${ELRON_ANALYST_NAME}
+      ELRON_ANALYST_PASSWORD: ${ELRON_ANALYST_PASSWORD}
+      DATA_ENGINEER_NAME:    ${DATA_ENGINEER_NAME}
+      DATA_ENGINEER_PASSWORD: ${DATA_ENGINEER_PASSWORD}
     depends_on:
       db:
         condition: service_healthy
@@ -81,6 +115,14 @@ services:
       - ./scripts:/app/scripts
       - ./IN:/app/IN
       - ./logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.02'
+          memory: 256M
     restart: unless-stopped
 
   # ── dbt transformations ─────────────────────────────────────
@@ -97,12 +139,21 @@ services:
       DB_PASSWORD:       ${POSTGRES_PASSWORD}
       DB_NAME:           ${POSTGRES_DB}
       DBT_INTERVAL_MIN:  ${DBT_INTERVAL_MIN}
+      TZ:                Europe/Tallinn
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - ./dbt:/app/dbt
       - ./logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.02'
+          memory: 256M
     restart: unless-stopped
 
   # ── Superset dashboard ──────────────────────────────────────
@@ -122,6 +173,12 @@ services:
       SUPERSET_ADMIN_EMAIL:    ${SUPERSET_ADMIN_EMAIL}
       SUPERSET_DATABASE_URI:   "postgresql+psycopg2://${SUPERSET_DB_USER}:${SUPERSET_DB_PASSWORD}@superset-db:5432/${SUPERSET_DB_NAME}"
       SUPERSET_URL:            http://superset:8088
+      # Transport DB connection — needed by superset_config.py
+      DB_HOST:                 db
+      DB_PORT:                 5432
+      DB_NAME:                 ${POSTGRES_DB}
+      DB_USER:                 ${POSTGRES_USER}
+      DB_PASSWORD:             ${POSTGRES_PASSWORD}
     ports:
       - "${DASHBOARD_PORT_HOST:-8088}:8088"
     depends_on:
@@ -132,6 +189,14 @@ services:
     volumes:
       - ./superset_config.py:/app/pythonpath/superset_config.py
       - superset_home:/app/superset_home
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+        reservations:
+          cpus: '0.02'
+          memory: 256M
     restart: unless-stopped
 
 volumes:

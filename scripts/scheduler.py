@@ -51,6 +51,48 @@ GTFS_TLT_HOUR   = int(os.environ.get("GTFS_TLT_CRON_HOUR",  3))
 GTFS_ELRON_DAY  = int(os.environ.get("GTFS_ELRON_CRON_DAY", 1))
 GTFS_ELRON_HOUR = int(os.environ.get("GTFS_ELRON_CRON_HOUR", 3))
 
+# ── Data retention cleanup ───────────────────────────────────
+BRONZE_RETENTION_DAYS = int(os.environ.get("BRONZE_RETENTION_DAYS", 7))
+
+def cleanup_old_data():
+    """
+    Delete bronze data older than BRONZE_RETENTION_DAYS (default 7).
+    bronze.vehicle_positions grows ~73MB/day — keep only recent week.
+    bronze.elron_positions grows ~7MB/day — same retention.
+    Silver/gold are rebuilt by dbt from bronze — shrink automatically.
+    """
+    conn = None
+    try:
+        conn = get_conn()
+        cur  = conn.cursor()
+
+        cur.execute("""
+            DELETE FROM bronze.vehicle_positions
+            WHERE ingested_at < NOW() - INTERVAL '%s days'
+        """, (BRONZE_RETENTION_DAYS,))
+        vp_deleted = cur.rowcount
+
+        cur.execute("""
+            DELETE FROM bronze.elron_positions
+            WHERE ingested_at < NOW() - INTERVAL '%s days'
+        """, (BRONZE_RETENTION_DAYS,))
+        ep_deleted = cur.rowcount
+
+        conn.commit()
+        log.info(
+            f"Cleanup: removed {vp_deleted} vehicle_positions rows "
+            f"and {ep_deleted} elron_positions rows "
+            f"(older than {BRONZE_RETENTION_DAYS} days)"
+        )
+    except Exception as e:
+        log.error(f"Cleanup failed: {e}")
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            conn.close()
+
+
 # ── Night mode ────────────────────────────────────────────────
 NIGHT_START = int(os.environ.get("NIGHT_START_HOUR", 0))   # 00:00
 NIGHT_END   = int(os.environ.get("NIGHT_END_HOUR",   6))   # 06:00
@@ -246,6 +288,17 @@ def main():
         max_instances=1
     )
 
+    # Cleanup old bronze data — daily at 03:30
+    # Keeps last BRONZE_RETENTION_DAYS days (default 7)
+    scheduler.add_job(
+        cleanup_old_data,
+        "cron",
+        hour=3,
+        minute=30,
+        id="cleanup_bronze",
+        max_instances=1
+    )
+
     tech.info("Scheduler started")
     tech.info(f"  ingest_gps      — every {GPS_INTERVAL}s (night off {NIGHT_START:02d}:00-{NIGHT_END:02d}:00)")
     tech.info(f"  ingest_elron    — every {ELRON_INTERVAL}s (night off {NIGHT_START:02d}:00-{NIGHT_END:02d}:00)")
@@ -254,6 +307,7 @@ def main():
     tech.info(f"  load_gtfs_elron — day {GTFS_ELRON_DAY} {GTFS_ELRON_HOUR:02d}:30")
     tech.info(f"  load_reference  — sunday 03:00")
     tech.info(f"  dbt             — every 5min (Dockerfile.dbt loop)")
+    tech.info(f"  cleanup_bronze  — daily 03:30 (keep {BRONZE_RETENTION_DAYS} days)")
 
     try:
         scheduler.start()

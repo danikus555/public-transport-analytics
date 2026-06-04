@@ -191,10 +191,15 @@ INSERT INTO reference.operators (code, name, city, website) VALUES
 ('SEBE',  'SEBE',                    'Regional', 'https://sebe.ee')
 ON CONFLICT (code) DO NOTHING;
 
+-- line_types.code = TLT GPS feed col[0] values for TLT vehicles
+-- code 4 = train, used exclusively for Elron (not in TLT GPS feed)
+-- NOTE: GTFS route_type uses different numbering (0=tram,2=train,3=bus,11=trolleybus)
+--       These codes are SEPARATE from GTFS — do not mix them up
 INSERT INTO reference.line_types (code, name, name_et, fuel_category) VALUES
 (1, 'tram',       'tramm', 'electric'),
 (2, 'bus',        'buss',  'mixed'),
-(3, 'trolleybus', 'troll', 'electric')
+(3, 'trolleybus', 'troll', 'electric'),
+(4, 'train',      'rong',  'mixed')
 ON CONFLICT (code) DO NOTHING;
 
 -- fuel_types: 95/98/diesel for price tracking, electric/gas/hybrid_diesel for vehicles

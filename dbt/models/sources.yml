@@ -7,19 +7,19 @@ sources:
       - name: vehicle_positions
         columns:
           - name: vehicle_id
-            tests:
+            data_tests:
               - not_null
           - name: lat
-            tests:
+            data_tests:
               - not_null
           - name: lon
-            tests:
+            data_tests:
               - not_null
           - name: ingested_at
-            tests:
+            data_tests:
               - not_null
           - name: operator
-            tests:
+            data_tests:
               - not_null
               - accepted_values:
                   values: ['TLT', 'Elron']
@@ -27,24 +27,33 @@ sources:
       - name: fuel_prices
         columns:
           - name: fuel_type
-            tests:
+            data_tests:
               - not_null
               - accepted_values:
                   values: ['95', '98', 'Diesel', 'electric', 'CNG']
           - name: price_eur
-            tests:
+            data_tests:
               - not_null
 
       - name: elron_positions
         columns:
           - name: liin
-            tests:
+            data_tests:
               - not_null
           - name: lat
-            tests:
+            data_tests:
               - not_null
           - name: lon
-            tests:
+            data_tests:
+              - not_null
+
+      - name: client_discounts
+        columns:
+          - name: company
+            data_tests:
+              - not_null
+          - name: fuel_type
+            data_tests:
               - not_null
 
   - name: reference
@@ -54,20 +63,20 @@ sources:
       - name: gtfs_stops
       - name: gtfs_trips
       - name: gtfs_stop_times
+      - name: gtfs_shapes
       - name: vehicle_models
         columns:
           - name: id
-            tests:
+            data_tests:
               - not_null
               - unique
           - name: model
-            tests:
+            data_tests:
               - not_null
           - name: consumption
-            tests:
+            data_tests:
               - not_null
       - name: operators
       - name: line_types
       - name: fuel_types
       - name: elron_line_types
-      - name: client_discounts

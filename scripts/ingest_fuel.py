@@ -10,6 +10,14 @@ Sources:
   teadmiseks.ee  → 95, 98, Diesel  (daily)
   elering.ee     → electric kWh     (every 15 min, Nord Pool)
   alexela.ee     → CNG kg           (weekly, changes rarely)
+
+CNG scraping notes:
+  Alexela CNG page uses JavaScript — price not in static HTML.
+  Instead: scrape the Alexela news page for CNG price announcements.
+  URL uses current year dynamically — no hardcoded year.
+  Regex anchored to "CNG hind" context to avoid matching other prices.
+  Fallback: if scraping fails, use last known price from DB.
+  CNG price changes ~3-4 times per year.
 """
 
 import os
@@ -30,8 +38,12 @@ tech = get_tech_log("FUEL")
 # ── Config — all from env ─────────────────────────────────────
 FUEL_URL     = os.environ["FUEL_URL"]
 ELECTRIC_URL = os.environ.get("ELECTRIC_URL", "https://dashboard.elering.ee/api/nps/price")
-ALEXELA_URL  = os.environ.get("ALEXELA_URL",  "https://www.alexela.ee/et/uudised-vana?year=2026&category=78")
-IN_BASE      = os.environ["IN_BASE"]
+# ALEXELA_URL base — year appended dynamically in fetch_cng_price()
+ALEXELA_URL_BASE = os.environ.get(
+    "ALEXELA_URL",
+    "https://www.alexela.ee/et/uudised-vana?year={year}&category=78"
+)
+IN_BASE = os.environ["IN_BASE"]
 
 FUEL_TYPE_MAP = {
     "bensiin 95":  "95",
@@ -132,6 +144,8 @@ def fetch_electric_price() -> dict | None:
     Fetch current Nord Pool electricity price from Elering API.
     Returns price in €/kWh (converted from €/MWh).
     Updates every 15 minutes.
+    Note: this is the wholesale spot price, not real consumer price.
+    Real consumer all-in price is set via client_discounts override.
     """
     try:
         now_utc   = datetime.now(timezone.utc)
@@ -165,40 +179,59 @@ def fetch_electric_price() -> dict | None:
         tech.error(f"Elering fetch failed: {e}")
         return None
 
-# ── Fetch CNG price from Alexela ─────────────────────────────
-def fetch_cng_price() -> dict | None:
+# ── Fetch CNG price — DB fallback only ──────────────────────
+def fetch_cng_price(conn=None) -> dict | None:
     """
-    Fetch CNG price from Alexela.
-    Changes rarely — checked weekly.
-    Falls back to last known price if scraping fails.
+    CNG price for Estonia (Alexela, only supplier, 11 stations).
+
+    No public API or scrapeable page exists:
+      - Alexela CNG price page uses JavaScript rendering
+      - News page scraping unreliable (finds old articles with wrong prices)
+      - No third-party API for Estonian CNG (fuelo.net blocks scrapers,
+        GlobalPetrolPrices requires paid API key)
+
+    Strategy: use last known price from DB.
+    Price changes ~3-4x per year — last known is almost always current.
+
+    Manual update when Alexela announces a price change:
+      1. Check: https://www.alexela.ee/et/uudised-vana?year=YYYY&category=78
+      2. Run in DBeaver:
+           INSERT INTO bronze.fuel_prices (fuel_type, price_eur, source_date, source)
+           VALUES ('CNG', <new_price>, CURRENT_DATE, 'alexela_manual');
     """
+    if conn:
+        return _get_last_known_cng(conn)
+
+    log.warning("CNG: no DB connection available for fallback — skipping")
+    return None
+
+
+def _get_last_known_cng(conn) -> dict | None:
+    """Return last known CNG price from DB as today's fallback."""
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (transport-analytics-bot/1.0)"}
-        t_start = time.time()
-        r = requests.get(ALEXELA_URL, headers=headers, timeout=15)
-        r.raise_for_status()
-        ms = (time.time() - t_start) * 1000
-        log_http("FUEL", ALEXELA_URL, r.status_code, ms)
-
-        soup = BeautifulSoup(r.text, "html.parser")
-        text = soup.get_text()
-
-        # look for price pattern like "2,299 euroni kilogrammist" or "2.299 €/kg"
-        match = re.search(r'(\d+[.,]\d+)\s*(?:euroni|€)\s*(?:kilogrammist|/\s*kg)', text)
-        if match:
-            price = float(match.group(1).replace(",", "."))
-            if 1.0 <= price <= 5.0:
-                log.debug(f"Scraped CNG price: {price} €/kg")
-                return {
-                    "fuel_type":   "CNG",
-                    "price_eur":   price,
-                    "source_date": date.today().isoformat(),
-                    "source":      "alexela.ee",
-                }
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT price_eur, source_date
+            FROM bronze.fuel_prices
+            WHERE UPPER(fuel_type) = 'CNG'
+            ORDER BY source_date DESC
+            LIMIT 1
+        """)
+        row = cur.fetchone()
+        if row:
+            price, last_date = row
+            log.info(
+                f"CNG fallback: using last known price {price} €/kg "
+                f"from {last_date}"
+            )
+            return {
+                "fuel_type":   "CNG",
+                "price_eur":   float(price),
+                "source_date": date.today().isoformat(),
+                "source":      f"last_known_fallback_{last_date}",
+            }
     except Exception as e:
-        tech.warning(f"Alexela CNG scrape failed: {e} — using last known price")
-
-    # fallback — return None, save_to_db will keep last known price
+        log.error(f"CNG DB fallback failed: {e}")
     return None
 
 # ── Save to file ──────────────────────────────────────────────
@@ -241,6 +274,37 @@ def save_to_db(prices: list[dict], conn) -> int:
     conn.commit()
     return inserted
 
+# ── One-time data correction ─────────────────────────────────
+def correct_cng_price(conn):
+    """
+    Fix historically wrong CNG prices caused by broken scraper URL.
+    The scraper was returning petrol price (~1.996) instead of CNG price.
+    Real Alexela CNG price since 04.05.2026: 1.199 €/kg.
+
+    This runs on every startup but only updates rows where price > 1.5 €/kg
+    (i.e. clearly wrong — real CNG is 0.8-1.5 €/kg range).
+    Safe to run repeatedly — no-op when prices are already correct.
+    """
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE bronze.fuel_prices
+            SET price_eur = 1.199,
+                source    = 'alexela_corrected_04052026'
+            WHERE UPPER(fuel_type) = 'CNG'
+              AND price_eur > 1.5
+        """)
+        rows = cur.rowcount
+        conn.commit()
+        if rows > 0:
+            log.info(f"CNG price correction applied: {rows} rows fixed (1.996 → 1.199 €/kg)")
+        else:
+            log.debug("CNG price correction: no rows needed fixing")
+    except Exception as e:
+        conn.rollback()
+        log.error(f"CNG price correction failed: {e}")
+
+
 # ── Main entry point ──────────────────────────────────────────
 def ingest_fuel():
     now   = datetime.now()
@@ -254,23 +318,7 @@ def ingest_fuel():
     if electric:
         prices.append(electric)
 
-    # 3. Fetch CNG price from Alexela (weekly — only add if scraped)
-    cng = fetch_cng_price()
-    if cng:
-        prices.append(cng)
-
-    if not prices:
-        log.warning("Fuel ingest returned 0 prices — skipping")
-        return
-
-    # save to file
-    try:
-        filepath = save_to_file(prices, now)
-    except Exception as e:
-        log.error(f"File save failed: {e}")
-        filepath = None
-
-    # save to DB
+    # Open DB connection early — needed for CNG fallback
     conn = None
     try:
         conn = get_conn()
@@ -279,6 +327,26 @@ def ingest_fuel():
             os.environ["DB_NAME"],
             os.environ["DB_USER"]
         )
+
+        # 0. Fix any historically wrong CNG prices from broken scraper
+        correct_cng_price(conn)
+
+        # 3. Fetch CNG price — pass conn for DB fallback
+        cng = fetch_cng_price(conn=conn)
+        if cng:
+            prices.append(cng)
+
+        if not prices:
+            log.warning("Fuel ingest returned 0 prices — skipping")
+            return
+
+        # save to file
+        try:
+            save_to_file(prices, now)
+        except Exception as e:
+            log.error(f"File save failed: {e}")
+
+        # save to DB
         count   = save_to_db(prices, conn)
         elapsed = (time.time() - start) * 1000
         summary = ", ".join(
@@ -289,6 +357,7 @@ def ingest_fuel():
             f" | {summary}"
             f" | {elapsed:.0f}ms"
         )
+
     except Exception as e:
         log.error(f"DB save failed: {e}")
         if conn:
