@@ -17,11 +17,32 @@ kütuse- ja elektrihinnad ning GTFS sõiduplaani.
 ## Live Demo
 
 **Video:** https://youtu.be/3D02XZF9Rek
-**Dashboard:** https://transport.fideliotech.ee 
+**Dashboard:** https://transport.fideliotech.ee
+
 Demovaataja juurdepääs (ainult lugemine):
+
 | Kasutajanimi | Parool | Vaade |
 |---|---|---|
 | `DataEngineer` | `123` | Kõik 4 näidikulauda |
+
+## Dashboard Screenshots
+
+Projekti screenshotid näidiseks
+### Screenshot 1 — TLT Operational Analysis
+
+![TLT Operational Analysis](docs/images/1.png)
+
+### Screenshot 2 — Elron Analysis Overview
+
+![Elron Analysis Overview](docs/images/2.png)
+
+### Screenshot 3 — Public Transport Estonia Dashboard
+
+![Public Transport Estonia Dashboard](docs/images/3.png)
+
+### Screenshot 4 — Elron Trains and Route Map
+
+![Elron Trains and Route Map](docs/images/4.png)
 
 ## Arhitektuur
 
