@@ -14,6 +14,15 @@ kütuse- ja elektrihinnad ning GTFS sõiduplaani.
 - Elroni API tagastab hilinemisandmed otse — ei vaja GTFS-RT-d
 - Nord Pool elektri börsihind muutub tunni kaupa (0.003–0.29 €/kWh) — operaatorid kasutavad lepingulist hinda
 
+## Live Demo
+
+**Video:** https://youtu.be/3D02XZF9Rek
+**Dashboard:** https://transport.fideliotech.ee 
+Demovaataja juurdepääs (ainult lugemine):
+| Kasutajanimi | Parool | Vaade |
+|---|---|---|
+| `DataEngineer` | `123` | Kõik 4 näidikulauda |
+
 ## Arhitektuur
 
 ```mermaid
@@ -57,20 +66,37 @@ docker compose up -d
 # Oota ~90s kuni Superset initsialiseerub
 docker exec transport-pipeline python scripts/setup_superset.py
 # Dashboard: http://localhost:8088
+
+# Esimene käivitamine — vajalik üks kord:
+docker exec transport-dbt dbt run --full-refresh \
+  --select vehicle_positions \
+  --project-dir /app/dbt --profiles-dir /app/dbt
+docker exec transport-dbt dbt run \
+  --project-dir /app/dbt --profiles-dir /app/dbt
 ```
 
 **Esimene käivitamine:** GTFS laadimine võtab ~5 minutit (1.17M stop_times rida).
 Järgnevad käivitamised jätavad vahele kui fail pole muutunud (~2s).
 
-## Kasutajad
+## Kasutajad ja rollid
 
 | Kasutajanimi | Parool (.env) | Roll | Näidikulaud |
 |---|---|---|---|
-| `admin` | `SUPERSET_ADMIN_PASSWORD` | Admin | Kõik |
-| `data_engineer` | `DATA_ENGINEER_PASSWORD` | Admin | Kõik |
-| `tlt_analyst` | `TLT_ANALYST_PASSWORD` | Gamma (ainult lugemine) | TLT analüüs |
-| `elron_analyst` | `ELRON_ANALYST_PASSWORD` | Gamma (ainult lugemine) | Elron analüüs |
-| `public_user` | `PUBLIC_USER_PASSWORD` | Gamma (ainult lugemine) | Avalik vaade |
+| `admin` | `SUPERSET_ADMIN_PASSWORD` | Admin | Kõik — muuda, kustuta, loo |
+| `data_engineer` | `DATA_ENGINEER_PASSWORD` | Admin | Kõik — muuda, kustuta, loo |
+| `tlt_analyst` | `TLT_ANALYST_PASSWORD` | Gamma (ainult lugemine) | Kõik avaldatud |
+| `elron_analyst` | `ELRON_ANALYST_PASSWORD` | Gamma (ainult lugemine) | Kõik avaldatud |
+| `public_user` | `PUBLIC_USER_PASSWORD` | Gamma (ainult lugemine) | Kõik avaldatud |
+
+**Rollide kirjeldus:**
+- **Admin** — täielik ligipääs: näidikulaudade loomine, muutmine, kustutamine, kasutajate haldus
+- **Gamma** — ainult lugemine: vaatab näidikulaudu, ei saa midagi muuta
+
+**Superset CE piirang:** Gamma roll näeb kõiki avaldatud näidikulaudu — per-näidikulaud
+isolatsioon nõuaks Superset Enterprise't või eraldi instantseid. Praeguses lahenduses
+kasutab `setup_superset.py` ühte andmeallikat operaatori filtritega (`WHERE operator = 'TLT'`
+jne), et kuvada iga näidikulaud ainult asjakohaste andmetega. Näidikulaudade layouti
+konfiguratsioon nõuab käsitsi seadistamist Superset UI kaudu pärast automaatset loomist.
 
 ## Andmeallikad
 
@@ -106,7 +132,7 @@ Järgnevad käivitamised jätavad vahele kui fail pole muutunud (~2s).
 
 ```bash
 docker exec transport-dbt dbt test --project-dir /app/dbt --profiles-dir /app/dbt
-# Tulemus: PASS=18 WARN=0 ERROR=0
+# Tulemus: PASS=28 WARN=0 ERROR=0
 ```
 
 | Test | Tabel | Veerg |
@@ -118,13 +144,16 @@ docker exec transport-dbt dbt test --project-dir /app/dbt --profiles-dir /app/db
 | `accepted_values` | bronze.vehicle_positions | operator IN ('TLT', 'Elron') |
 | `accepted_values` | bronze.fuel_prices | fuel_type IN ('95','98','Diesel','electric','CNG') |
 | `not_null` + `unique` | bronze.client_discounts | company, fuel_type |
+| `not_null` | gold.fuel_cost_daily | operator, estimated_daily_cost_eur, utilization_pct |
+| `not_null` + `accepted_values` | gold.elron_delays | liin, delay_min, delay_category |
+| `not_null` + `unique` | gold.latest_positions | vehicle_id, lat, lon |
 
 ## Tulemused (Sprint 3)
 
 | Mõõdik | Väärtus |
 |---|---|
 | dbt mudelid | 13 |
-| dbt testid | PASS=18 WARN=0 ERROR=0 |
+| dbt testid | PASS=28 WARN=0 ERROR=0 |
 | dbt run aeg | **4.42s** (oli 578s) |
 | TLT aktiivsed sõidukid (päeval) | ~460–580 |
 | Elroni aktiivsed rongid (päeval) | 11–20 |
@@ -163,15 +192,12 @@ public-transport-analytics/
 │   ├── dbt_project.yml
 │   ├── profiles.yml
 │   ├── macros/
-│   │   ├── normalise_liin.sql
-│   │   └── generate_schema_name.sql
 │   └── models/
 │       ├── sources.yml
+│       ├── gold/
+│       │   └── gold.yml        # gold kihi testid
 │       ├── silver/
-│       │   ├── vehicle_positions.sql   # inkrementaalne
-│       │   └── elron_positions.sql
 │       └── gold/
-│           └── *.sql                   # 11 gold mudelit
 └── docs/
     ├── arhitektuur.md
     └── progress.md
@@ -181,7 +207,7 @@ public-transport-analytics/
 
 - **TLT hilinemised:** TLT GPS-il puudub graafikust kõrvalekalde väli — bussid/trammid näitavad ainult lähedust peatusele (500m), mitte tegelikku hilinemist
 - **CNG hind:** Alexela CNG lehekülg kasutab JavaScripti — automaatne scraping ei toimi; hind uuendatakse käsitsi DB-s
-- **Superset CE ligipääsu kontroll:** Gamma roll näeb kõiki avaldatud näidikulaudu — per-näidikulaud isolatsioon nõuab Superset Enterprise't
+- **Superset CE ligipääsu kontroll:** Superset Community Edition Gamma roll näeb kõiki avaldatud näidikulaudu — per-näidikulaud isolatsioon nõuab Superset Enterprise't. Praegu kasutatakse ühte `setup_superset.py` skripti, mis loob eraldi graafikud iga näidikulaua jaoks operaatori filtritega (WHERE operator = 'TLT/Elron'). Samas graafikuid ja näidikulaudu saab API kaudu automaatselt luua, kuid layouti (paigutuse) konfiguratsioon nõuab käsitsi seadistamist Superset UI-s. Täiustuseks oleks võimalik kasutada eraldi Superset instantseid iga rolli jaoks või spetsiifilisi row-level security reegleid.
 - **Kütusekulu täpsus:** ±20-30% — nominaalne tarbimine tootja andmetest, GTFS planeeritud km (mitte tegelikult sõidetud)
 - **Elektri hind:** Nord Pool börsihind on volatiilne; tegelik operaatori hind on `fuel_with_discount` tabelis lepinguliste hindadena
 - **Ühe sõlme arhitektuur:** pgduckdb töötab ühe konteinerina ilma replikatsioonita

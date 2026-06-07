@@ -92,6 +92,12 @@ docker exec transport-pipeline python scripts/setup_superset.py
 ## Sprint 3 — projekti lõpetamine
 **Periood:** 01.06–07.06.2026 | **Staatus:** ✅ Valmis
 
+### Live demo
+
+**Video:** https://youtu.be/3D02XZF9Rek 
+**Dashboard:** https://transport.fideliotech.ee  
+**Demovaataja:** kasutajanimi `DataEngineer` / parool `123` (ainult lugemine, projekti tutvustuseks)
+
 ### Mis muutus võrreldes Sprint 2-ga
 
 Sprint 2 kütusekulu mudel kasutas hinnangulisi kilomeetreid (225 km/päev buss, 800 km/päev rong).
@@ -134,7 +140,7 @@ tasandil, mistõttu busside kütusekulu arvutatakse laevastiku proportsioonide p
 ### dbt — lõplik seis
 
 - **13 mudelit** (7 Sprint 2 + 6 Sprint 3)
-- **PASS=18 WARN=0 ERROR=0** (kõik testid läbitud)
+- **PASS=28 WARN=0 ERROR=0** (kõik testid läbitud)
 - `tests:` → `data_tests:` uuendatud (dbt 1.8 nõue)
 - `silver.vehicle_positions` inkrementaalne (unique_key: id)
 
@@ -169,7 +175,7 @@ tasandil, mistõttu busside kütusekulu arvutatakse laevastiku proportsioonide p
 | Mõõdik | Väärtus |
 |---|---|
 | dbt mudelid | 13 |
-| dbt testid | PASS=18 WARN=0 ERROR=0 |
+| dbt testid | PASS=28 WARN=0 ERROR=0 |
 | dbt run aeg | **4.42s** (oli 578s) |
 | TLT aktiivsed sõidukid | ~460–580 päeval |
 | Elroni aktiivsed rongid | 11–20 päeval |
@@ -190,6 +196,14 @@ docker compose up -d
 # Oota ~90s kuni Superset initsialiseerub
 docker exec transport-pipeline python scripts/setup_superset.py
 # Dashboard: http://localhost:8088
+
+
+# Esimene käivitamine — vajalik ainult üks kord:
+docker exec transport-dbt dbt run --full-refresh \
+  --select vehicle_positions \
+  --project-dir /app/dbt --profiles-dir /app/dbt
+docker exec transport-dbt dbt run \
+  --project-dir /app/dbt --profiles-dir /app/dbt
 ```
 
 ### Teadaolevad piirangud
@@ -200,6 +214,6 @@ docker exec transport-pipeline python scripts/setup_superset.py
 | TLT GPS ei tuvasta sõiduki mudelit | Busside kütusekulu arvutatakse laevastiku proportsioonidena, mitte sõiduki täpselt |
 | CNG hind — API puudub | Alexela ei paku masinloetavat hinda; uuendatakse käsitsi DB-s |
 | Elektri hind volatiilne | Nord Pool börsihind muutub tunnis; tegelik hind on `fuel_with_discount` tabelis |
-| Superset CE rollipõhine ligipääs | Gamma roll näeb kõiki avaldatud näidikulaudu — per-näidikulaud isolatsioon nõuab Enterprise't |
+| Superset CE rollipõhine ligipääs | Superset Community Edition Gamma roll näeb kõiki avaldatud näidikulaudu. Praegu loob `setup_superset.py` eraldi graafikud iga näidikulaua jaoks operaatori filtritega (WHERE operator = 'TLT/Elron'). Layouti konfiguratsioon nõuab käsitsi seadistamist Superset UI-s. Täiustuseks oleks eraldi instantsid iga rolli jaoks või row-level security reeglid (nõuab Enterprise't) |
 | Ühe sõlme andmebaas | pgduckdb töötab ühe konteinerina — ei sobi kõrge käideldavuse tootmiskeskkonnale |
 | GTFS-RT puudub TLT jaoks | TLT reaalajas graafikuandmeid pole — ainult GPS positsioonid |
